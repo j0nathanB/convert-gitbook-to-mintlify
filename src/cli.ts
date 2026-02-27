@@ -394,9 +394,12 @@ async function run(opts: CliOptions): Promise<void> {
           }
         }
 
+        // Clean browser <title> — strip " | Section | Site" suffixes.
+        const pageTitle = (crawledPage.title || '').split(' | ')[0].trim();
+
         parsedPages.push({
           path: outputPath,
-          title: crawledPage.title,
+          title: pageTitle,
           frontmatter,
           rawBody: mdxBody,
           gitbookBlocks: [],
@@ -574,17 +577,34 @@ async function run(opts: CliOptions): Promise<void> {
       let mdxContent: string;
       if (hasScraper && !hasSource && page.gitbookBlocks.length === 0) {
         // Scraped pages: rawBody is already MDX from convertHtmlToMdx.
-        // Just add frontmatter.
+        // Clean the title: browser <title> includes section/site suffixes
+        // like "Page | Section | Site Name" — take just the first segment.
+        const cleanTitle = (page.title || '').split(' | ')[0].trim();
+
+        let body = page.rawBody;
+
+        // Strip first H1 if it matches the title (avoids redundancy).
+        if (config.transforms.removeFirstH1) {
+          body = body.replace(/^(#\s+.+\n?\n?)/, (match: string, h1: string) => {
+            const h1Text = h1.replace(/^#\s+/, '').trim();
+            // Remove if it matches the clean title or the full title.
+            if (h1Text === cleanTitle || h1Text === page.title) {
+              return '';
+            }
+            return match;
+          });
+        }
+
         const fmLines = [
           '---',
-          `title: "${(page.title || '').replace(/"/g, '\\"')}"`,
+          `title: "${cleanTitle.replace(/"/g, '\\"')}"`,
         ];
         if (page.frontmatter.mode) {
           fmLines.push(`mode: "${page.frontmatter.mode}"`);
         }
         fmLines.push('---');
         const fm = fmLines.join('\n');
-        mdxContent = `${fm}\n\n${page.rawBody}\n`;
+        mdxContent = `${fm}\n\n${body}\n`;
       } else {
         mdxContent = convertToMdx(page, {
           linkMap,

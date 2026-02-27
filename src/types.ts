@@ -121,6 +121,7 @@ export interface GitBookPageContent {
     tableOfContents?: boolean;
     title?: boolean;
     description?: boolean;
+    outline?: boolean;
   };
   document?: {
     nodes: GitBookDocumentNode[];

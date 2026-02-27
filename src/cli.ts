@@ -478,8 +478,10 @@ async function run(opts: CliOptions): Promise<void> {
 
                   // Use API layout metadata for frontmatter mode.
                   if (pageContent.layout) {
-                    const { width, tableOfContents, title: showTitle } = pageContent.layout;
-                    if (width === 'wide' && tableOfContents === false) {
+                    const { width, tableOfContents, title: showTitle, outline } = pageContent.layout;
+                    if (outline === false && tableOfContents === false) {
+                      frontmatter.mode = 'center';
+                    } else if (width === 'wide' && tableOfContents === false) {
                       frontmatter.mode = 'wide';
                     } else if (showTitle === false && tableOfContents === false) {
                       frontmatter.mode = 'center';
@@ -682,6 +684,40 @@ async function run(opts: CliOptions): Promise<void> {
   for (const tab of reconciledTabs) {
     for (const group of tab.groups) {
       collectPageIcons(group, pageIconMap);
+    }
+  }
+
+  // Identify pages that are the sole page in their tab.  A sidebar with one
+  // entry is useless, so these should be centered instead.
+  const singlePageTabPaths = new Set<string>();
+  for (const tab of reconciledTabs) {
+    const allPages: string[] = [];
+    const collect = (g: NavGroup) => {
+      for (const p of g.pages) allPages.push((p.outputPath ?? p.path).replace(/\.(mdx|md)$/, '') + '.mdx');
+      if (g.groups) g.groups.forEach(collect);
+    };
+    tab.groups.forEach(collect);
+    if (allPages.length === 1) singlePageTabPaths.add(allPages[0]);
+  }
+
+  // Identify tab landing pages (first page in each tab's first group).
+  // These get 'wide' mode to remove the TOC while keeping the sidebar.
+  const tabLandingPaths = new Set<string>();
+  for (const tab of reconciledTabs) {
+    if (tab.groups.length > 0 && tab.groups[0].pages.length > 0) {
+      const first = tab.groups[0].pages[0];
+      tabLandingPaths.add((first.outputPath ?? first.path).replace(/\.(mdx|md)$/, '') + '.mdx');
+    }
+  }
+
+  // Override modes based on tab structure.
+  for (const page of parsedPages) {
+    if (singlePageTabPaths.has(page.path)) {
+      // Single-page tabs → center (no sidebar).
+      page.frontmatter.mode = 'center';
+    } else if (tabLandingPaths.has(page.path) && !page.frontmatter.mode) {
+      // Tab landing pages → wide (no TOC, keep sidebar).
+      page.frontmatter.mode = 'wide';
     }
   }
 

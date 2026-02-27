@@ -43,6 +43,10 @@ export function cleanScrapedContent(
     selectors.breadcrumbs,
     selectors.lastModified,
     selectors.toc,
+    // GitBook "Ask AI" assistant button.
+    'button[aria-label="GitBook Assistant"]',
+    // "More" dropdown button next to the Ask button.
+    'button[aria-label="More"]',
   ];
 
   removeMatchingNodes(tree, removeSelectors);
@@ -73,6 +77,10 @@ export function extractMainContent(
     selectors.breadcrumbs,
     selectors.lastModified,
     selectors.toc,
+    // GitBook "Ask AI" assistant button.
+    'button[aria-label="GitBook Assistant"]',
+    // "More" dropdown button next to the Ask button.
+    'button[aria-label="More"]',
   ];
   removeMatchingNodes(tree, removeSelectors);
 

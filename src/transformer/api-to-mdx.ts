@@ -178,8 +178,22 @@ function renderTabs(node: GitBookDocumentNode, ctx: RenderContext): string {
 }
 
 function renderExpandable(node: GitBookDocumentNode, ctx: RenderContext): string {
-  const title = escapeAttr(node.data?.title ?? '');
-  const inner = renderChildren(node, ctx);
+  // Expandable blocks store title and body in fragments, not in data/nodes.
+  const titleFragment = (node.fragments ?? []).find(
+    (f) => f.type === 'expandable-title',
+  );
+  const bodyFragment = (node.fragments ?? []).find(
+    (f) => f.type === 'expandable-body',
+  );
+
+  const title = titleFragment
+    ? escapeAttr(extractPlainText(titleFragment))
+    : escapeAttr(node.data?.title ?? '');
+
+  const inner = bodyFragment
+    ? renderChildren(bodyFragment, ctx)
+    : renderChildren(node, ctx);
+
   return `<Accordion title="${title}">\n${inner}\n</Accordion>`;
 }
 

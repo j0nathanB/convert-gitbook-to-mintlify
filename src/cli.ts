@@ -234,11 +234,15 @@ async function run(opts: CliOptions): Promise<void> {
         apiPages.push(...pages);
 
         // Build page-ID-to-path and page-ID-to-spaceId maps.
-        const prefix = findSpacePathPrefix(apiStructure!, spaceId);
-        buildPageIdMap(pages, prefix, pageIdToPath, pageIdToSpaceId, spaceId);
+        // Include site basename so resolved paths match Mintlify output paths.
+        const sectionPrefix = findSpacePathPrefix(apiStructure!, spaceId);
+        const siteBase = sitePublished?.site.basename ?? '';
+        const fullPrefix = [siteBase, sectionPrefix].filter(Boolean).join('/');
+        buildPageIdMap(pages, fullPrefix, pageIdToPath, pageIdToSpaceId, spaceId);
 
         // Build space-ID-to-path map for resolving kind:"space" refs.
-        spaceIdToPath.set(spaceId, prefix ? `/${prefix}` : '/');
+        const spaceRoot = fullPrefix ? `/${fullPrefix}` : '/';
+        spaceIdToPath.set(spaceId, spaceRoot);
 
         spinner.text = `Fetching files for space ${spaceId}...`;
         const files = await fetchSpaceFiles(client, spaceId);
@@ -1234,52 +1238,33 @@ function buildPageIdMap(
 /**
  * Find a page ID by looking up the crawled URL path in the ID-to-path map.
  *
- * The crawled path includes the site basename (e.g. `j0nathanb-docs/documentation/basics/editor`)
- * while the map stores paths without the basename (e.g. `documentation/basics/editor`).
- * We also handle the default section ("readme" pages mapped to root paths).
+ * Both the crawled path and the map now include the site basename prefix
+ * (e.g. `j0nathanb-docs/documentation/basics/editor`).
+ * We also handle "readme" landing pages whose published URL omits the
+ * trailing `/readme` segment.
  */
 function findPageIdByPath(
   idToPath: Map<string, string>,
   urlPath: string,
-  siteBasename?: string,
+  _siteBasename?: string,
 ): string | undefined {
   const normalized = urlPath.replace(/^\//, '').replace(/\/+$/, '');
-
-  // Try stripping the site basename prefix.
-  let pathWithoutBase = normalized;
-  if (siteBasename) {
-    const base = siteBasename.replace(/^\//, '').replace(/\/+$/, '');
-    if (normalized.startsWith(base + '/')) {
-      pathWithoutBase = normalized.slice(base.length + 1);
-    } else if (normalized === base) {
-      pathWithoutBase = '';
-    }
-  }
 
   // Direct lookup in the map (reverse: find ID by path).
   for (const [id, path] of idToPath) {
     const mapNorm = path.replace(/^\//, '').replace(/\/+$/, '');
-    if (mapNorm === pathWithoutBase || mapNorm === normalized) {
+    if (mapNorm === normalized) {
       return id;
     }
   }
 
   // "readme" pages are landing pages — their published URL is just the
-  // section path (e.g. `/documentation/`) while the API stores them as
-  // `documentation/readme`.  Check if appending `/readme` matches.
+  // section path (e.g. `j0nathanb-docs/documentation/`) while the API
+  // stores them as `j0nathanb-docs/documentation/readme`.
+  const withReadme = normalized ? `${normalized}/readme` : 'readme';
   for (const [id, path] of idToPath) {
     const mapNorm = path.replace(/^\//, '').replace(/\/+$/, '');
-    const withReadme = pathWithoutBase ? `${pathWithoutBase}/readme` : 'readme';
     if (mapNorm === withReadme) {
-      return id;
-    }
-  }
-
-  // Try matching just the last segments (page path within space).
-  // E.g. crawled "j0nathanb-docs/documentation/basics/editor" → API page path "basics/editor"
-  for (const [id, path] of idToPath) {
-    const mapNorm = path.replace(/^\//, '').replace(/\/+$/, '');
-    if (mapNorm && (pathWithoutBase.endsWith(mapNorm) || normalized.endsWith(mapNorm))) {
       return id;
     }
   }

@@ -38,7 +38,8 @@ export async function checkNavigation(outputDir: string): Promise<ValidationResu
 
   const allPagePaths: string[] = [];
 
-  for (const navItem of docsJson.navigation) {
+  const navItems = docsJson.navigation.tabs ?? [];
+  for (const navItem of navItems) {
     if (typeof navItem === 'string') {
       // Top-level page reference.
       allPagePaths.push(navItem);

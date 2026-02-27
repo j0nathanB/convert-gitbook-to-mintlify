@@ -201,7 +201,7 @@ export interface DocsJson {
       dark?: string;
     };
   };
-  navigation: DocsNavItem[];
+  navigation: { tabs: DocsNavTab[] };
   redirects?: Array<{ source: string; destination: string }>;
   footerSocials?: Record<string, string>;
   font?: {

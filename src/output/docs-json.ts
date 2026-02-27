@@ -128,7 +128,8 @@ export function buildDocsJson(options: BuildDocsJsonOptions): DocsJson {
 
   const docsJson: DocsJson = {
     $schema: 'https://mintlify.com/docs.json',
-    navigation: buildNavigation(tabs),
+    theme: 'mint',
+    navigation: { tabs: buildNavigation(tabs) },
   };
 
   // ── Name ─────────────────────────────────────────────────────────

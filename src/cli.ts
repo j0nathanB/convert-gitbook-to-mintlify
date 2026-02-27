@@ -63,6 +63,7 @@ import type {
   MigrationConfig,
   MigrationReport,
   Discrepancy,
+  ManualReviewItem,
   MigrationWarning,
 } from './types.js';
 
@@ -245,6 +246,54 @@ async function run(opts: CliOptions): Promise<void> {
       throw error;
     }
   }
+
+  // ── Theme / color translation warnings ───────────────────────────────
+  if (customization?.styling) {
+    const styling = customization.styling;
+    const theme = styling.theme;
+    const tintLight = styling.tint?.color?.light;
+    const tintDark = styling.tint?.color?.dark;
+    const sidebarBg = styling.sidebar?.background;
+
+    // GitBook "bold" theme fills the header & sidebar with the tint/primary
+    // color.  Mintlify has no equivalent — primary is used only as an accent
+    // color for links and buttons.
+    if (theme === 'bold' || theme === 'default-bold') {
+      const colorNote = tintLight
+        ? ` (tint: ${tintLight}/${tintDark ?? 'n/a'})`
+        : '';
+      warnings.push({
+        type: 'theme_translation',
+        message:
+          `GitBook uses the "${theme}" theme${colorNote} which fills the header and sidebar ` +
+          `with the primary/tint color. Mintlify only uses the primary color as an accent ` +
+          `for links and buttons — there is no direct equivalent for header/sidebar ` +
+          `background fills. You may approximate this with Mintlify's background.color ` +
+          `setting, but it tints the entire page, not just the header.`,
+        severity: 'warning',
+      });
+    }
+
+    // Sidebar filled background has no Mintlify equivalent
+    if (sidebarBg === 'filled') {
+      warnings.push({
+        type: 'theme_translation',
+        message:
+          `GitBook sidebar has background: "filled" which tints the sidebar background. ` +
+          `Mintlify does not support sidebar background customization.`,
+        severity: 'warning',
+      });
+    }
+  }
+
+  // Build manual-review items for theme translation issues (used in report).
+  const themeReviewItems: ManualReviewItem[] = warnings
+    .filter((w) => w.type === 'theme_translation')
+    .map((w) => ({
+      path: 'docs.json',
+      reason: w.message,
+      severity: 'medium' as const,
+    }));
 
   // ════════════════════════════════════════════════════════════════════
   // Phase 2: Source File Parsing
@@ -599,11 +648,14 @@ async function run(opts: CliOptions): Promise<void> {
             severity: 'warning' as const,
           })),
         ],
-        manualReviewQueue: categorized.missing.map((a) => ({
-          path: a.referencedIn[0] ?? a.sourcePath,
-          reason: `Missing image: ${a.sourcePath}`,
-          severity: 'medium' as const,
-        })),
+        manualReviewQueue: [
+          ...categorized.missing.map((a) => ({
+            path: a.referencedIn[0] ?? a.sourcePath,
+            reason: `Missing image: ${a.sourcePath}`,
+            severity: 'medium' as const,
+          })),
+          ...themeReviewItems,
+        ],
       });
 
       // Write all output files

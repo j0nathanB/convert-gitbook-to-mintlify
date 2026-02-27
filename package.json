@@ -1,0 +1,48 @@
+{
+  "name": "gitbook-to-mintlify",
+  "version": "1.0.0",
+  "description": "Convert GitBook documentation to Mintlify format",
+  "type": "module",
+  "main": "dist/cli.js",
+  "bin": {
+    "gitbook-to-mintlify": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/cli.js",
+    "dev": "tsx src/cli.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "gitbook",
+    "mintlify",
+    "migration",
+    "documentation"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0",
+    "glob": "^11.0.0",
+    "gray-matter": "^4.0.3",
+    "ora": "^8.1.0",
+    "rehype-parse": "^9.0.1",
+    "rehype-remark": "^10.0.0",
+    "remark-frontmatter": "^5.0.0",
+    "remark-mdx": "^3.1.0",
+    "remark-parse": "^11.0.0",
+    "remark-stringify": "^11.0.0",
+    "undici": "^6.19.0",
+    "unified": "^11.0.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  },
+  "optionalDependencies": {
+    "playwright": "^1.58.2"
+  }
+}

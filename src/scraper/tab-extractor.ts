@@ -7,6 +7,7 @@
  */
 
 import type { ScraperSelectors } from './selectors.js';
+import { cleanIconLabel } from './nav-extractor.js';
 
 // Use `import type` for Playwright types -- the actual import is dynamic.
 import type { Page } from 'playwright';
@@ -38,7 +39,8 @@ export async function extractTabs(
   const tabs: Array<{ label: string; url: string }> = [];
 
   for (const link of links) {
-    const label = ((await link.textContent()) ?? '').trim();
+    const rawLabel = ((await link.textContent()) ?? '').trim();
+    const label = cleanIconLabel(rawLabel);
     const href = (await link.getAttribute('href')) ?? '';
 
     if (label && href) {

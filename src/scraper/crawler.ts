@@ -12,6 +12,7 @@
  */
 
 import type { ScraperSelectors } from './selectors.js';
+import type { NavTreeNode } from '../types.js';
 import { extractNavigation } from './nav-extractor.js';
 import { extractTabs } from './tab-extractor.js';
 import { logger } from '../utils/logger.js';
@@ -47,9 +48,22 @@ export interface CrawledPage {
   title: string;
 }
 
+export interface CrawledTab {
+  /** Display label for the tab (e.g. "Documentation", "API Reference"). */
+  label: string;
+  /** Fully-qualified URL for the tab's landing page. */
+  url: string;
+  /** URL-derived slug (e.g. "documentation", "api-reference"). */
+  slug: string;
+  /** Sidebar navigation tree extracted from this tab's page. */
+  navTree: NavTreeNode[];
+}
+
 export interface CrawlResult {
   pages: CrawledPage[];
   errors: string[];
+  /** Tab structure discovered from the sections nav. Empty if no tabs found. */
+  tabs: CrawledTab[];
 }
 
 // ── Public API ───────────────────────────────────────────────────────
@@ -102,15 +116,18 @@ export async function crawlSite(
     // GitBook sites with multiple tabs render each tab's pages in a
     // separate sidebar. Visit each tab URL and extract its sidebar nav.
     logger.info('Checking for tab sections...');
-    const tabs = await extractTabs(rootPage, options.selectors);
-    if (tabs.length > 0) {
-      logger.info(`Found ${tabs.length} tab(s): ${tabs.map((t) => t.label).join(', ')}`);
-      for (const tab of tabs) {
+    const rawTabs = await extractTabs(rootPage, options.selectors);
+    const crawledTabs: CrawledTab[] = [];
+
+    if (rawTabs.length > 0) {
+      logger.info(`Found ${rawTabs.length} tab(s): ${rawTabs.map((t) => t.label).join(', ')}`);
+      for (const tab of rawTabs) {
         allDiscoveredUrls.push(tab.url);
+        let tabNavTree: NavTreeNode[] = [];
         try {
           const tabPage = await context.newPage();
           await tabPage.goto(tab.url, { waitUntil: 'networkidle', timeout: 30_000 });
-          const tabNavTree = await extractNavigation(
+          tabNavTree = await extractNavigation(
             tabPage,
             options.selectors,
             options.sidebarExpansionRounds,
@@ -122,6 +139,13 @@ export async function crawlSite(
           logger.warn(`Failed to extract nav from tab "${tab.label}": ${msg}`);
           errors.push(`Tab "${tab.label}" nav extraction failed: ${msg}`);
         }
+
+        crawledTabs.push({
+          label: tab.label,
+          url: tab.url,
+          slug: deriveSlug(tab.url, origin),
+          navTree: tabNavTree,
+        });
       }
     }
 
@@ -211,7 +235,7 @@ export async function crawlSite(
       `Crawl complete: ${pages.length} page(s) fetched, ${errors.length} error(s).`,
     );
 
-    return { pages, errors };
+    return { pages, errors, tabs: crawledTabs };
   } finally {
     if (browser) {
       await browser.close();
@@ -399,6 +423,23 @@ function extractInternalLinks(html: string, origin: string): string[] {
   }
 
   return urls;
+}
+
+/**
+ * Derive a URL slug from a tab URL by taking the last non-empty path
+ * segment relative to the origin.
+ *
+ * E.g. `https://example.gitbook.io/my-docs/documentation` → `documentation`
+ *      `https://example.gitbook.io/my-docs` → `my-docs`
+ */
+function deriveSlug(tabUrl: string, origin: string): string {
+  try {
+    const pathname = new URL(tabUrl).pathname.replace(/\/+$/, '');
+    const segments = pathname.split('/').filter(Boolean);
+    return segments[segments.length - 1] ?? '';
+  } catch {
+    return '';
+  }
 }
 
 /**

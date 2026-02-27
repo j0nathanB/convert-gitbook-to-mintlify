@@ -22,7 +22,7 @@ export function getDefaultConfig(): MigrationConfig {
       sidebarExpansionRounds: 3,
       skipPaths: [],
       selectors: {
-        sectionsNav: '[data-testid="space-header-section"]',
+        sectionsNav: 'nav[aria-label="Main"] ul[data-gb-sections], nav#sections, [data-testid="space-header-section"]',
       },
     },
     transforms: {

@@ -13,6 +13,37 @@ import type { ScraperSelectors } from './selectors.js';
 // Compile-time only.
 import type { Page } from 'playwright';
 
+// ── Icon-label cleaning ─────────────────────────────────────────────
+
+/**
+ * Strip a lowercase-only icon-name prefix from GitBook labels.
+ *
+ * GitBook renders icon names as text nodes before the real label,
+ * producing strings like `"boltQuickstart"` or `"book-blankDocumentation"`.
+ * This function detects the pattern (lowercase/dash prefix followed by
+ * an uppercase transition) and returns just the human-readable part.
+ */
+export function cleanIconLabel(raw: string): string {
+  // Match: one or more lowercase/dash chars, then an uppercase letter
+  // starting the real label.  E.g. "boltQuickstart" → "Quickstart",
+  // "book-blankDocumentation" → "Documentation".
+  const m = raw.match(/^[a-z][a-z0-9-]*([A-Z].*)$/);
+  return m ? m[1] : raw;
+}
+
+/**
+ * Recursively clean icon-text prefixed labels in a NavTreeNode tree.
+ */
+export function cleanNavTreeLabels(nodes: NavTreeNode[]): NavTreeNode[] {
+  for (const node of nodes) {
+    node.label = cleanIconLabel(node.label);
+    if (node.children?.length) {
+      cleanNavTreeLabels(node.children);
+    }
+  }
+  return nodes;
+}
+
 // ── Public API ───────────────────────────────────────────────────────
 
 /**
@@ -39,10 +70,44 @@ export async function extractNavigation(
   // --- Walk the fully expanded sidebar DOM ---------------------------
   const tree = await buildNavTree(p, selectors);
 
+  // --- Clean icon-text prefixed labels --------------------------------
+  cleanNavTreeLabels(tree);
+
   return tree;
 }
 
 // ── Expansion logic ──────────────────────────────────────────────────
+
+/**
+ * Resolve the sidebar container selector.  Tries the configured
+ * `sidebarNav` first, then falls back to the aside with the most links.
+ * Returns the CSS path to use for scoped queries.
+ */
+async function resolveSidebarSelector(
+  page: Page,
+  selectors: ScraperSelectors,
+): Promise<string> {
+  const primary = selectors.sidebarNav;
+  const found = await page.$(primary);
+  if (found) return primary;
+
+  // Fallback: find aside with most links (same logic as buildNavTree).
+  const asideSelector = await page.evaluate(() => {
+    const asides = document.querySelectorAll('aside');
+    let bestIdx = -1;
+    let bestCount = 0;
+    for (let i = 0; i < asides.length; i++) {
+      const count = asides[i].querySelectorAll('a[href]').length;
+      if (count > bestCount) {
+        bestCount = count;
+        bestIdx = i;
+      }
+    }
+    return bestIdx >= 0 && bestCount >= 2 ? `aside:nth-of-type(${bestIdx + 1})` : null;
+  });
+
+  return asideSelector ?? primary;
+}
 
 /**
  * Iteratively click collapsed sidebar toggles until no new items appear
@@ -53,15 +118,16 @@ async function expandAllCollapsed(
   selectors: ScraperSelectors,
   maxRounds: number,
 ): Promise<void> {
+  const container = await resolveSidebarSelector(page, selectors);
   let previousItemCount = 0;
 
   for (let round = 0; round < maxRounds; round++) {
     // Count how many sidebar items exist right now.
-    const currentItemCount = await countSidebarItems(page, selectors);
+    const currentItemCount = await countSidebarItems(page, container);
 
     // Find all collapsed toggles (aria-expanded="false").
     const collapsedToggles = await page.$$(
-      `${selectors.sidebarNav} ${selectors.collapsibleToggle}[aria-expanded="false"]`,
+      `${container} ${selectors.collapsibleToggle}[aria-expanded="false"]`,
     );
 
     if (collapsedToggles.length === 0) {
@@ -86,7 +152,7 @@ async function expandAllCollapsed(
       // Ignore timeout errors.
     }
 
-    const newItemCount = await countSidebarItems(page, selectors);
+    const newItemCount = await countSidebarItems(page, container);
 
     // If no new items appeared, we are done.
     if (newItemCount <= previousItemCount && round > 0) {
@@ -102,10 +168,10 @@ async function expandAllCollapsed(
  */
 async function countSidebarItems(
   page: Page,
-  selectors: ScraperSelectors,
+  containerSelector: string,
 ): Promise<number> {
   return page.$$eval(
-    `${selectors.sidebarNav} a[href]`,
+    `${containerSelector} a[href]`,
     (els: Element[]) => els.length,
   );
 }
@@ -154,8 +220,13 @@ async function buildNavTree(
             continue;
           }
 
-          var directLink = child.querySelector(':scope > a[href]') ||
-            child.querySelector(':scope > ' + args.sidebarItem);
+          var directLink = child.querySelector(':scope > a[href]');
+          if (!directLink) {
+            var parts = args.sidebarItem.split(',');
+            for (var pi = 0; pi < parts.length && !directLink; pi++) {
+              directLink = child.querySelector(':scope > ' + parts[pi].trim());
+            }
+          }
 
           var nestedContainer =
             child.querySelector(':scope > ul') ||
@@ -173,6 +244,18 @@ async function buildNavTree(
             }
           } else if (nestedContainer) {
             var labelEl = child.querySelector(':scope > span, :scope > div > span, :scope > p, :scope > button');
+            // Also check for a plain-text div (no links) as a group header.
+            // Newer GitBook themes use <div>Group Name</div> with no child elements.
+            if (!labelEl) {
+              var candidateDivs = child.querySelectorAll(':scope > div');
+              for (var cdi = 0; cdi < candidateDivs.length; cdi++) {
+                var cd = candidateDivs[cdi];
+                if (!cd.querySelector('a[href]') && (cd.textContent || '').trim()) {
+                  labelEl = cd;
+                  break;
+                }
+              }
+            }
             var label = labelEl ? (labelEl.textContent || '').trim() : '';
             if (label) {
               nodes.push({ label: label, children: walkContainer(nestedContainer, depth + 1) });
@@ -192,6 +275,38 @@ async function buildNavTree(
       };
 
       var nav = document.querySelector(args.sidebarNav);
+
+      // Fallback: find the best aside sidebar container (newer GitBook themes).
+      // The sidebar lives in <aside class="side-sheet"> but the actual nav
+      // list is buried inside nested divs.  Find the aside with the most
+      // links, then target the <ul> inside it that has the most links.
+      if (!nav) {
+        var asides = document.querySelectorAll('aside');
+        var bestAside = null;
+        var bestAsideLinks = 0;
+        for (var ai = 0; ai < asides.length; ai++) {
+          var count = asides[ai].querySelectorAll('a[href]').length;
+          if (count > bestAsideLinks) {
+            bestAsideLinks = count;
+            bestAside = asides[ai];
+          }
+        }
+        if (bestAside && bestAsideLinks >= 2) {
+          // Find the <ul> or <ol> inside the aside with the most links.
+          var lists = bestAside.querySelectorAll('ul, ol');
+          var bestList = null;
+          var bestListLinks = 0;
+          for (var li = 0; li < lists.length; li++) {
+            var listLinkCount = lists[li].querySelectorAll('a[href]').length;
+            if (listLinkCount > bestListLinks) {
+              bestListLinks = listLinkCount;
+              bestList = lists[li];
+            }
+          }
+          nav = bestList || bestAside;
+        }
+      }
+
       if (!nav) return [];
       return walkContainer(nav, 0);
     })(${JSON.stringify({ sidebarNav: selectors.sidebarNav, sidebarItem: selectors.sidebarItem })})`,

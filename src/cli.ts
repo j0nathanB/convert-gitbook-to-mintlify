@@ -28,6 +28,7 @@ import { convertHtmlToMdx } from './transformer/hast-to-mdx.js';
 
 // ── Scraper ─────────────────────────────────────────────────────────
 import { crawlSite } from './scraper/crawler.js';
+import type { CrawledTab } from './scraper/crawler.js';
 import { extractNavigation } from './scraper/nav-extractor.js';
 import { extractTabs } from './scraper/tab-extractor.js';
 import { extractTheme } from './scraper/theme-extractor.js';
@@ -58,6 +59,9 @@ import type {
   GitBookRedirect,
   GitBookOpenAPISpec,
   NavTab,
+  NavGroup,
+  NavPage,
+  NavTreeNode,
   ParsedPage,
   ImageAsset,
   MigrationConfig,
@@ -395,20 +399,25 @@ async function run(opts: CliOptions): Promise<void> {
         }
       }
 
-      // If no API or source nav, build nav from crawled pages
+      // If no API or source nav, build nav from crawler tab structure
       if (summaryTabs.length === 0 && parsedPages.length > 0) {
-        const defaultGroup = {
-          label: 'Documentation',
-          pages: parsedPages.map((p) => ({
-            label: p.title || p.path.replace(/\.mdx$/, '').split('/').pop() || 'Untitled',
-            path: p.path,
-          })),
-        };
-        summaryTabs = [{
-          label: 'Documentation',
-          slug: 'documentation',
-          groups: [defaultGroup],
-        }];
+        if (crawlResult.tabs.length > 0) {
+          summaryTabs = buildNavTabsFromCrawledTabs(crawlResult.tabs, parsedPages);
+        } else {
+          // Ultimate flat fallback when no tabs discovered at all
+          const defaultGroup = {
+            label: 'Documentation',
+            pages: parsedPages.map((p) => ({
+              label: p.title || p.path.replace(/\.mdx$/, '').split('/').pop() || 'Untitled',
+              path: p.path,
+            })),
+          };
+          summaryTabs = [{
+            label: 'Documentation',
+            slug: 'documentation',
+            groups: [defaultGroup],
+          }];
+        }
       }
 
       // Extract theme/logo from the first crawled page if available.
@@ -845,4 +854,173 @@ function collectPathsFromGroup(
       collectPathsFromGroup(sub, paths);
     }
   }
+}
+
+// ── Tab-aware nav builder from crawled tabs ──────────────────────────
+
+/**
+ * Convert `CrawledTab[]` (from the crawler) into `NavTab[]` used by
+ * the reconciler and docs.json builder.
+ *
+ * Tabs with a populated sidebar navTree produce multiple groups
+ * reflecting the sidebar hierarchy.  Tabs with empty sidebars (e.g.
+ * Home, Changelog) produce a single-page tab if a matching crawled
+ * page exists.
+ */
+function buildNavTabsFromCrawledTabs(
+  crawledTabs: CrawledTab[],
+  parsedPages: ParsedPage[],
+): NavTab[] {
+  // Index crawled pages by normalized pathname for quick lookup.
+  const pageByPath = new Map<string, ParsedPage>();
+  for (const p of parsedPages) {
+    const norm = p.path.replace(/\.mdx$/, '').replace(/\/+$/, '');
+    pageByPath.set(norm, p);
+  }
+
+  const navTabs: NavTab[] = [];
+
+  for (const tab of crawledTabs) {
+    const slug = tab.slug;
+
+    if (tab.navTree.length > 0) {
+      // Build groups from the navTree.
+      const groups = navTreeToGroups(tab.navTree, tab.label);
+
+      // Prepend a landing-page group for the tab itself if a page
+      // exists at the tab URL path AND isn't already in the navTree groups.
+      const tabPath = pathFromUrl(tab.url);
+      const tabPage = findParsedPage(pageByPath, tabPath);
+      if (tabPage) {
+        const alreadyInGroups = groups.some((g) =>
+          g.pages.some((p) => typeof p !== 'string' && 'path' in p && p.path === tabPage.path),
+        );
+        if (!alreadyInGroups) {
+          const landingGroup: NavGroup = {
+            label: tab.label,
+            pages: [{
+              label: tabPage.title || tab.label,
+              path: tabPage.path,
+            }],
+          };
+          groups.unshift(landingGroup);
+        }
+      }
+
+      navTabs.push({ label: tab.label, slug, groups });
+    } else {
+      // Tab with no sidebar (Home, Changelog, etc.) — single page.
+      const tabPath = pathFromUrl(tab.url);
+      const tabPage = findParsedPage(pageByPath, tabPath);
+      if (tabPage) {
+        navTabs.push({
+          label: tab.label,
+          slug,
+          groups: [{
+            label: tab.label,
+            pages: [{
+              label: tabPage.title || tab.label,
+              path: tabPage.path,
+            }],
+          }],
+        });
+      }
+    }
+  }
+
+  return navTabs;
+}
+
+/**
+ * Convert a NavTreeNode[] sidebar tree into NavGroup[].
+ *
+ * Top-level nodes without children become pages in a default group.
+ * Top-level nodes that are group headers (no path, have children)
+ * become separate NavGroups.
+ */
+function navTreeToGroups(nodes: NavTreeNode[], defaultLabel: string): NavGroup[] {
+  const groups: NavGroup[] = [];
+  let currentPages: NavPage[] = [];
+
+  for (const node of nodes) {
+    if (!node.path && node.children?.length > 0) {
+      // Flush accumulated pages as a default group.
+      if (currentPages.length > 0) {
+        groups.push({ label: defaultLabel, pages: currentPages });
+        currentPages = [];
+      }
+      // This is a named group header.
+      const groupPages = flattenTreeToPages(node.children);
+      if (groupPages.length > 0) {
+        groups.push({ label: node.label, pages: groupPages });
+      }
+    } else if (node.path) {
+      const outPath = nodePathToOutputPath(node.path);
+      if (outPath && outPath !== '.mdx') {
+        currentPages.push({ label: node.label, path: outPath });
+      }
+      // Also include any children as pages in the same run.
+      if (node.children?.length > 0) {
+        currentPages.push(...flattenTreeToPages(node.children));
+      }
+    }
+  }
+
+  // Flush remaining pages.
+  if (currentPages.length > 0) {
+    groups.push({ label: defaultLabel, pages: currentPages });
+  }
+
+  return groups;
+}
+
+/**
+ * Recursively flatten NavTreeNode children into a flat list of NavPages.
+ * Filters out nodes with empty or root-only paths.
+ */
+function flattenTreeToPages(nodes: NavTreeNode[]): NavPage[] {
+  const pages: NavPage[] = [];
+  for (const node of nodes) {
+    if (node.path) {
+      const outPath = nodePathToOutputPath(node.path);
+      // Skip empty paths or bare ".mdx" (from empty/root-only pathnames).
+      if (outPath && outPath !== '.mdx') {
+        pages.push({ label: node.label, path: outPath });
+      }
+    }
+    if (node.children?.length > 0) {
+      pages.push(...flattenTreeToPages(node.children));
+    }
+  }
+  return pages;
+}
+
+/**
+ * Convert a NavTreeNode path (URL pathname like `/docs/quickstart`)
+ * into the output path format used by ParsedPage (`docs/quickstart.mdx`).
+ */
+function nodePathToOutputPath(nodePath: string): string {
+  return nodePath.replace(/^\//, '').replace(/\/+$/, '') + '.mdx';
+}
+
+/**
+ * Extract the pathname from a URL string.
+ */
+function pathFromUrl(urlStr: string): string {
+  try {
+    return new URL(urlStr).pathname;
+  } catch {
+    return urlStr;
+  }
+}
+
+/**
+ * Find a ParsedPage by pathname, trying several normalization variants.
+ */
+function findParsedPage(
+  index: Map<string, ParsedPage>,
+  pathname: string,
+): ParsedPage | undefined {
+  const norm = pathname.replace(/^\//, '').replace(/\/+$/, '');
+  return index.get(norm) ?? index.get(norm + '/index');
 }

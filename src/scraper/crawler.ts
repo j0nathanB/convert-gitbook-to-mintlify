@@ -46,6 +46,15 @@ export interface CrawledPage {
   html: string;
   /** Page title extracted from the DOM. */
   title: string;
+  /** Layout hints detected from the page's DOM structure. */
+  layoutHints?: {
+    /** Whether the page has a table of contents (right sidebar). */
+    hasToc: boolean;
+    /** Whether the page uses wide content width. */
+    isWide: boolean;
+    /** Whether the main content is visually centered. */
+    isCentered: boolean;
+  };
 }
 
 export interface CrawledTab {
@@ -293,7 +302,23 @@ async function fetchPage(
     const html = await page.content();
     const path = new URL(url).pathname;
 
-    return { url, path, html, title };
+    // Detect layout hints from <main> element classes.
+    const layoutHints = await page.evaluate(() => {
+      const main = document.querySelector('main');
+      if (!main) return undefined;
+      const classes = main.className || '';
+      const hasToc = classes.includes('page-has-toc');
+      const isWide = classes.includes('page-width-wide');
+      // Check if content is centered: left and right margins roughly equal.
+      const rect = main.getBoundingClientRect();
+      const vw = window.innerWidth;
+      const left = rect.left;
+      const right = vw - rect.right;
+      const isCentered = Math.abs(left - right) < 50 && left > 100;
+      return { hasToc, isWide, isCentered };
+    });
+
+    return { url, path, html, title, layoutHints: layoutHints ?? undefined };
   } finally {
     await page.close();
   }

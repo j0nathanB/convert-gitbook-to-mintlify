@@ -383,10 +383,21 @@ async function run(opts: CliOptions): Promise<void> {
         const pagePath = crawledPage.path.replace(/^\//, '') || 'index';
         const outputPath = `${pagePath}.mdx`.replace(/\/+$/, '/index.mdx');
 
+        // Derive Mintlify page mode from GitBook layout hints.
+        const frontmatter: Record<string, unknown> = {};
+        if (crawledPage.layoutHints) {
+          const { hasToc, isCentered } = crawledPage.layoutHints;
+          if (!hasToc && isCentered) {
+            frontmatter.mode = 'center';
+          } else if (!hasToc) {
+            frontmatter.mode = 'wide';
+          }
+        }
+
         parsedPages.push({
           path: outputPath,
           title: crawledPage.title,
-          frontmatter: {},
+          frontmatter,
           rawBody: mdxBody,
           gitbookBlocks: [],
           images: [],
@@ -564,11 +575,15 @@ async function run(opts: CliOptions): Promise<void> {
       if (hasScraper && !hasSource && page.gitbookBlocks.length === 0) {
         // Scraped pages: rawBody is already MDX from convertHtmlToMdx.
         // Just add frontmatter.
-        const fm = [
+        const fmLines = [
           '---',
           `title: "${(page.title || '').replace(/"/g, '\\"')}"`,
-          '---',
-        ].join('\n');
+        ];
+        if (page.frontmatter.mode) {
+          fmLines.push(`mode: "${page.frontmatter.mode}"`);
+        }
+        fmLines.push('---');
+        const fm = fmLines.join('\n');
         mdxContent = `${fm}\n\n${page.rawBody}\n`;
       } else {
         mdxContent = convertToMdx(page, {

@@ -122,78 +122,79 @@ async function buildNavTree(
   page: Page,
   selectors: ScraperSelectors,
 ): Promise<NavTreeNode[]> {
+  // We pass the function body as a string to page.evaluate() to prevent
+  // tsx/esbuild from injecting __name() decorators that don't exist in
+  // the browser context.
   const tree: NavTreeNode[] = await page.evaluate(
-    (args: { sidebarNav: string; sidebarItem: string }) => {
-      // Use arrow functions to avoid tsx/esbuild __name decorators
-      // which don't exist in the browser context.
-      const linkToNode = (anchor: HTMLAnchorElement): any => {
-        const label = (anchor.textContent ?? '').trim();
+    `(function(args) {
+      var linkToNode = function(anchor) {
+        var label = (anchor.textContent || '').trim();
         if (!label) return null;
-        let path: string | undefined;
+        var path;
         try {
-          const url = new URL(anchor.href, window.location.origin);
+          var url = new URL(anchor.href, window.location.origin);
           path = url.pathname;
-        } catch {
-          path = anchor.getAttribute('href') ?? undefined;
+        } catch(e) {
+          path = anchor.getAttribute('href') || undefined;
         }
-        return { label, path, children: [] };
+        return { label: label, path: path, children: [] };
       };
 
-      const walkContainer = (container: Element, depth: number): any[] => {
-        const nodes: any[] = [];
-        const children = Array.from(container.children);
+      var walkContainer = function(container, depth) {
+        var nodes = [];
+        var children = Array.from(container.children);
 
-        for (const child of children) {
+        for (var i = 0; i < children.length; i++) {
+          var child = children[i];
           if (child.nodeType !== Node.ELEMENT_NODE) continue;
 
           if (child.matches('a[href]')) {
-            const node = linkToNode(child as HTMLAnchorElement);
+            var node = linkToNode(child);
             if (node) nodes.push(node);
             continue;
           }
 
-          const directLink = child.querySelector(':scope > a[href]') ??
-            child.querySelector(`:scope > ${args.sidebarItem}`);
+          var directLink = child.querySelector(':scope > a[href]') ||
+            child.querySelector(':scope > ' + args.sidebarItem);
 
-          const nestedContainer =
-            child.querySelector(':scope > ul') ??
-            child.querySelector(':scope > ol') ??
-            child.querySelector(':scope > div > ul') ??
+          var nestedContainer =
+            child.querySelector(':scope > ul') ||
+            child.querySelector(':scope > ol') ||
+            child.querySelector(':scope > div > ul') ||
             child.querySelector(':scope > div > ol');
 
           if (directLink && directLink.matches('a[href]')) {
-            const node = linkToNode(directLink as HTMLAnchorElement);
-            if (node) {
+            var node2 = linkToNode(directLink);
+            if (node2) {
               if (nestedContainer) {
-                node.children = walkContainer(nestedContainer, depth + 1);
+                node2.children = walkContainer(nestedContainer, depth + 1);
               }
-              nodes.push(node);
+              nodes.push(node2);
             }
           } else if (nestedContainer) {
-            const labelEl = child.querySelector(':scope > span, :scope > div > span, :scope > p, :scope > button');
-            const label = labelEl ? (labelEl.textContent ?? '').trim() : '';
+            var labelEl = child.querySelector(':scope > span, :scope > div > span, :scope > p, :scope > button');
+            var label = labelEl ? (labelEl.textContent || '').trim() : '';
             if (label) {
-              nodes.push({ label, children: walkContainer(nestedContainer, depth + 1) });
+              nodes.push({ label: label, children: walkContainer(nestedContainer, depth + 1) });
             } else {
-              nodes.push(...walkContainer(nestedContainer, depth + 1));
+              nodes.push.apply(nodes, walkContainer(nestedContainer, depth + 1));
             }
           } else {
-            const tagLower = child.tagName.toLowerCase();
+            var tagLower = child.tagName.toLowerCase();
             if (tagLower === 'ul' || tagLower === 'ol') {
-              nodes.push(...walkContainer(child, depth));
+              nodes.push.apply(nodes, walkContainer(child, depth));
             } else if (child.querySelector('a[href]')) {
-              nodes.push(...walkContainer(child, depth));
+              nodes.push.apply(nodes, walkContainer(child, depth));
             }
           }
         }
         return nodes;
       };
 
-      const nav = document.querySelector(args.sidebarNav);
+      var nav = document.querySelector(args.sidebarNav);
       if (!nav) return [];
       return walkContainer(nav, 0);
-    },
-    { sidebarNav: selectors.sidebarNav, sidebarItem: selectors.sidebarItem },
+    })(${JSON.stringify({ sidebarNav: selectors.sidebarNav, sidebarItem: selectors.sidebarItem })})`,
   );
 
   return tree;

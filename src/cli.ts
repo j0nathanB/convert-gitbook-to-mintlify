@@ -194,6 +194,10 @@ async function run(opts: CliOptions): Promise<void> {
   const pageIdToPath = new Map<string, string>();
   // Map from page ID → space ID (for fetching page content from the right space).
   const pageIdToSpaceId = new Map<string, string>();
+  // Map from file ID → download URL (for resolving cover images in card tables).
+  const fileIdToUrl = new Map<string, string>();
+  // Map from space ID → path prefix (for resolving kind:"space" refs).
+  const spaceIdToPath = new Map<string, string>();
 
   // ════════════════════════════════════════════════════════════════════
   // Phase 1: API Data Extraction
@@ -233,9 +237,19 @@ async function run(opts: CliOptions): Promise<void> {
         const prefix = findSpacePathPrefix(apiStructure!, spaceId);
         buildPageIdMap(pages, prefix, pageIdToPath, pageIdToSpaceId, spaceId);
 
+        // Build space-ID-to-path map for resolving kind:"space" refs.
+        spaceIdToPath.set(spaceId, prefix ? `/${prefix}` : '/');
+
         spinner.text = `Fetching files for space ${spaceId}...`;
         const files = await fetchSpaceFiles(client, spaceId);
         apiFiles.push(...files);
+
+        // Build file-ID-to-URL map for resolving cover images.
+        for (const file of files) {
+          if (file.downloadURL) {
+            fileIdToUrl.set(file.id, file.downloadURL);
+          }
+        }
       }
 
       // Fetch OpenAPI specs
@@ -413,7 +427,10 @@ async function run(opts: CliOptions): Promise<void> {
                 const pageContent = await fetchPageContent(apiClient, spaceId, pageId);
 
                 if (pageContent.document?.nodes) {
-                  mdxBody = apiDocumentToMdx(pageContent.document.nodes, pageIdToPath);
+                  mdxBody = apiDocumentToMdx(pageContent.document.nodes, pageIdToPath, {
+                    fileIdToUrl,
+                    spaceIdToPath,
+                  });
                   usedApi = true;
 
                   // Use API layout metadata for frontmatter mode.

@@ -19,13 +19,22 @@ import type { GitBookDocumentNode, GitBookDocumentLeaf } from '../types.js';
  * @param nodes - The `document.nodes` array from the page content API.
  * @param pageIdToPath - Map from GitBook page ID → output path (for
  *   resolving `content-ref` and `button` links to other pages).
+ * @param opts - Optional maps for resolving file IDs and space IDs.
  * @returns MDX body string (no frontmatter).
  */
 export function apiDocumentToMdx(
   nodes: GitBookDocumentNode[],
   pageIdToPath: Map<string, string>,
+  opts?: {
+    fileIdToUrl?: Map<string, string>;
+    spaceIdToPath?: Map<string, string>;
+  },
 ): string {
-  const ctx: RenderContext = { pageIdToPath };
+  const ctx: RenderContext = {
+    pageIdToPath,
+    fileIdToUrl: opts?.fileIdToUrl ?? new Map(),
+    spaceIdToPath: opts?.spaceIdToPath ?? new Map(),
+  };
   const lines = nodes.map((n) => renderNode(n, ctx)).filter(Boolean);
   return lines.join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
 }
@@ -34,6 +43,8 @@ export function apiDocumentToMdx(
 
 interface RenderContext {
   pageIdToPath: Map<string, string>;
+  fileIdToUrl: Map<string, string>;
+  spaceIdToPath: Map<string, string>;
 }
 
 // ── Node renderer ────────────────────────────────────────────────────
@@ -261,20 +272,36 @@ function renderCardTable(node: GitBookDocumentNode, ctx: RenderContext): string 
     // Extract href from the target definition column.
     if (targetDefId && values[targetDefId]) {
       const targetVal = values[targetDefId];
-      if (typeof targetVal === 'object' && targetVal !== null && targetVal.url) {
-        href = targetVal.url;
-      } else if (typeof targetVal === 'object' && targetVal !== null && targetVal.kind === 'page' && targetVal.page) {
-        href = ctx.pageIdToPath.get(targetVal.page) ?? '';
-        if (href && !href.startsWith('/')) href = '/' + href;
+      if (typeof targetVal === 'object' && targetVal !== null) {
+        if (targetVal.url) {
+          href = targetVal.url;
+        } else if (targetVal.kind === 'page' && targetVal.page) {
+          href = ctx.pageIdToPath.get(targetVal.page) ?? '';
+          if (href && !href.startsWith('/')) href = '/' + href;
+        } else if (targetVal.kind === 'space' && targetVal.space) {
+          href = ctx.spaceIdToPath.get(targetVal.space) ?? '';
+          if (href && !href.startsWith('/')) href = '/' + href;
+        }
       }
     }
 
     // Extract cover image from the cover definition column.
+    // Values can be file objects with downloadURL, or bare file ID strings.
     if (coverDefId && values[coverDefId]) {
       const coverVal = values[coverDefId];
       const files = Array.isArray(coverVal) ? coverVal : [coverVal];
-      if (files[0]?.downloadURL) {
-        coverImage = files[0].downloadURL;
+      for (const file of files) {
+        if (typeof file === 'object' && file?.downloadURL) {
+          coverImage = file.downloadURL;
+          break;
+        } else if (typeof file === 'string') {
+          // Bare file ID — resolve through the file map.
+          const url = ctx.fileIdToUrl.get(file);
+          if (url) {
+            coverImage = url;
+            break;
+          }
+        }
       }
     }
 

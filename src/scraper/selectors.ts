@@ -30,8 +30,8 @@ export const defaultSelectors = {
   /** Copy-to-clipboard buttons on code blocks (removed during cleanup). */
   copyButton: 'button[aria-label="Copy"]',
 
-  /** Breadcrumb navigation (removed during cleanup). */
-  breadcrumbs: 'nav[aria-label="Breadcrumbs"]',
+  /** Breadcrumb navigation (removed during cleanup). Matches both plural and singular. */
+  breadcrumbs: 'nav[aria-label="Breadcrumbs"], nav[aria-label="Breadcrumb"]',
 
   /** "Last modified" / "Updated X ago" metadata (removed during cleanup). */
   lastModified: '[data-testid="last-modified"]',

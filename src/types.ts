@@ -106,6 +106,49 @@ export interface GitBookRedirect {
   destination: string;
 }
 
+/**
+ * Response from `GET /spaces/{spaceId}/content/page/{pageId}`.
+ * Contains the structured document blocks for a single page.
+ */
+export interface GitBookPageContent {
+  id: string;
+  title: string;
+  description?: string;
+  path: string;
+  layout?: {
+    width?: string;
+    tableOfContents?: boolean;
+    title?: boolean;
+    description?: boolean;
+  };
+  document?: {
+    nodes: GitBookDocumentNode[];
+  };
+}
+
+/**
+ * A single node in a GitBook document tree.
+ * Nodes are recursive — most block types contain child `nodes`.
+ */
+export interface GitBookDocumentNode {
+  type: string;
+  data?: Record<string, any>;
+  nodes?: GitBookDocumentNode[];
+  leaves?: GitBookDocumentLeaf[];
+  /** For table blocks, inline content fragments referenced by record values. */
+  fragments?: GitBookDocumentNode[];
+  /** Unique key for this node (used as fragment reference). */
+  key?: string;
+}
+
+/**
+ * A leaf (text run) within an inline node.
+ */
+export interface GitBookDocumentLeaf {
+  text: string;
+  marks?: Array<{ type: string }>;
+}
+
 // ─── Internal Data Model ───
 
 export interface NavTreeNode {

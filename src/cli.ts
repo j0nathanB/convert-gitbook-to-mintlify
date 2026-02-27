@@ -9,7 +9,7 @@ import { glob } from 'glob';
 // ── API layer ────────────────────────────────────────────────────────
 import { GitBookClient } from './api/client.js';
 import { fetchSitePublished, fetchSiteRedirects } from './api/site.js';
-import { fetchSpacePages, fetchSpaceFiles } from './api/space.js';
+import { fetchSpacePages, fetchSpaceFiles, fetchPageContent } from './api/space.js';
 import { fetchOpenAPISpecs } from './api/openapi.js';
 
 // ── Parsers ──────────────────────────────────────────────────────────
@@ -25,6 +25,7 @@ import { buildAssetInventory, categorizeAssets } from './reconciler/asset-invent
 // ── Transformer ──────────────────────────────────────────────────────
 import { convertToMdx } from './transformer/mdx-converter.js';
 import { convertHtmlToMdx } from './transformer/hast-to-mdx.js';
+import { apiDocumentToMdx } from './transformer/api-to-mdx.js';
 
 // ── Scraper ─────────────────────────────────────────────────────────
 import { crawlSite } from './scraper/crawler.js';
@@ -189,6 +190,11 @@ async function run(opts: CliOptions): Promise<void> {
   let parsedPages: ParsedPage[] = [];
   const warnings: MigrationWarning[] = [];
 
+  // Map from GitBook page ID → output path (for resolving content-ref / button links).
+  const pageIdToPath = new Map<string, string>();
+  // Map from page ID → space ID (for fetching page content from the right space).
+  const pageIdToSpaceId = new Map<string, string>();
+
   // ════════════════════════════════════════════════════════════════════
   // Phase 1: API Data Extraction
   // ════════════════════════════════════════════════════════════════════
@@ -217,11 +223,15 @@ async function run(opts: CliOptions): Promise<void> {
       const spaceIds = extractSpaceIds(apiStructure);
       logger.debug(`Found ${spaceIds.length} space(s) in site structure`);
 
-      // Fetch pages and files for each space
+      // Fetch pages and files for each space, building ID maps as we go.
       for (const spaceId of spaceIds) {
         spinner.text = `Fetching pages for space ${spaceId}...`;
         const pages = await fetchSpacePages(client, spaceId);
         apiPages.push(...pages);
+
+        // Build page-ID-to-path and page-ID-to-spaceId maps.
+        const prefix = findSpacePathPrefix(apiStructure!, spaceId);
+        buildPageIdMap(pages, prefix, pageIdToPath, pageIdToSpaceId, spaceId);
 
         spinner.text = `Fetching files for space ${spaceId}...`;
         const files = await fetchSpaceFiles(client, spaceId);
@@ -373,29 +383,70 @@ async function run(opts: CliOptions): Promise<void> {
 
       logger.debug(`Crawled ${crawlResult.pages.length} page(s), ${crawlResult.errors.length} error(s)`);
 
-      // Convert scraped pages to ParsedPage format
+      // Convert scraped pages to ParsedPage format.
+      // When API is available, try to fetch rich content from the API for
+      // each page and render with apiDocumentToMdx (primary path).  Fall
+      // back to scraper HTML → MDX conversion if API content is unavailable.
       scraperSpinner.text = 'Converting scraped content to MDX...';
-      for (const crawledPage of crawlResult.pages) {
-        // Extract and clean main content
-        const cleanHtml = extractMainContent(crawledPage.html, selectors);
-        const mdxBody = convertHtmlToMdx(cleanHtml);
+      const apiClient = hasApi ? new GitBookClient(config.api.token!) : null;
 
+      for (const crawledPage of crawlResult.pages) {
         const pagePath = crawledPage.path.replace(/^\//, '') || 'index';
         const outputPath = `${pagePath}.mdx`.replace(/\/+$/, '/index.mdx');
 
+        // Clean browser <title> — strip " | Section | Site" suffixes.
+        const pageTitle = (crawledPage.title || '').split(' | ')[0].trim();
+
         // Derive Mintlify page mode from GitBook layout hints.
         const frontmatter: Record<string, unknown> = {};
-        if (crawledPage.layoutHints) {
-          const { hasToc, isCentered } = crawledPage.layoutHints;
-          if (!hasToc && isCentered) {
-            frontmatter.mode = 'center';
-          } else if (!hasToc) {
-            frontmatter.mode = 'wide';
+        let mdxBody = '';
+        let usedApi = false;
+
+        // Try API content rendering first.
+        if (apiClient) {
+          const pageId = findPageIdByPath(pageIdToPath, pagePath, sitePublished?.site.basename);
+          if (pageId) {
+            const spaceId = pageIdToSpaceId.get(pageId);
+            if (spaceId) {
+              try {
+                scraperSpinner.text = `Fetching API content for ${pagePath}...`;
+                const pageContent = await fetchPageContent(apiClient, spaceId, pageId);
+
+                if (pageContent.document?.nodes) {
+                  mdxBody = apiDocumentToMdx(pageContent.document.nodes, pageIdToPath);
+                  usedApi = true;
+
+                  // Use API layout metadata for frontmatter mode.
+                  if (pageContent.layout) {
+                    const { width, tableOfContents, title: showTitle } = pageContent.layout;
+                    if (width === 'wide' && tableOfContents === false) {
+                      frontmatter.mode = 'wide';
+                    } else if (showTitle === false && tableOfContents === false) {
+                      frontmatter.mode = 'center';
+                    }
+                  }
+                }
+              } catch (err) {
+                logger.debug(`API content fetch failed for ${pagePath}, falling back to scraper: ${err}`);
+              }
+            }
           }
         }
 
-        // Clean browser <title> — strip " | Section | Site" suffixes.
-        const pageTitle = (crawledPage.title || '').split(' | ')[0].trim();
+        // Fall back to scraper HTML conversion.
+        if (!usedApi) {
+          const cleanHtml = extractMainContent(crawledPage.html, selectors);
+          mdxBody = convertHtmlToMdx(cleanHtml);
+
+          if (crawledPage.layoutHints) {
+            const { hasToc, isCentered } = crawledPage.layoutHints;
+            if (!hasToc && isCentered) {
+              frontmatter.mode = 'center';
+            } else if (!hasToc) {
+              frontmatter.mode = 'wide';
+            }
+          }
+        }
 
         parsedPages.push({
           path: outputPath,
@@ -1097,4 +1148,124 @@ function collectPageIcons(
       collectPageIcons(sub, iconMap);
     }
   }
+}
+
+// ── API content rendering helpers ────────────────────────────────────
+
+/**
+ * Find the URL path prefix for a space within the site structure.
+ *
+ * GitBook published URLs use the section path as the URL segment, NOT
+ * a combination of section + space paths.  For the default section,
+ * pages appear at the site root.
+ *
+ * For example, if the site basename is `my-docs` and a section path is
+ * `documentation`, the published URL is `my-docs/documentation/`.
+ * Pages within that space have paths like `basics/editor`, so the full
+ * crawled path is `my-docs/documentation/basics/editor`.
+ *
+ * We use the section path as the prefix.  The default section (Home)
+ * gets an empty prefix so its pages appear at root level.
+ */
+function findSpacePathPrefix(
+  structure: GitBookSiteStructure,
+  spaceId: string,
+): string {
+  if (structure.type === 'sections') {
+    for (const section of structure.structure) {
+      for (const ss of section.siteSpaces) {
+        if (ss.space.id === spaceId) {
+          // Default section pages appear at the root — no prefix.
+          if (section.default) return '';
+          return section.path?.replace(/^\//, '').replace(/\/+$/, '') ?? '';
+        }
+      }
+    }
+  } else {
+    for (const ss of structure.structure) {
+      if (ss.space.id === spaceId) {
+        return ss.path?.replace(/^\//, '').replace(/\/+$/, '') ?? '';
+      }
+    }
+  }
+  return '';
+}
+
+/**
+ * Recursively walk the API page tree and build ID → path and
+ * ID → spaceId maps.
+ */
+function buildPageIdMap(
+  pages: GitBookPage[],
+  pathPrefix: string,
+  idToPath: Map<string, string>,
+  idToSpace: Map<string, string>,
+  spaceId: string,
+): void {
+  for (const page of pages) {
+    const pagePath = page.path?.replace(/^\//, '') ?? '';
+    const fullPath = [pathPrefix, pagePath].filter(Boolean).join('/');
+    idToPath.set(page.id, fullPath);
+    idToSpace.set(page.id, spaceId);
+
+    if (page.pages && page.pages.length > 0) {
+      buildPageIdMap(page.pages, pathPrefix, idToPath, idToSpace, spaceId);
+    }
+  }
+}
+
+/**
+ * Find a page ID by looking up the crawled URL path in the ID-to-path map.
+ *
+ * The crawled path includes the site basename (e.g. `j0nathanb-docs/documentation/basics/editor`)
+ * while the map stores paths without the basename (e.g. `documentation/basics/editor`).
+ * We also handle the default section ("readme" pages mapped to root paths).
+ */
+function findPageIdByPath(
+  idToPath: Map<string, string>,
+  urlPath: string,
+  siteBasename?: string,
+): string | undefined {
+  const normalized = urlPath.replace(/^\//, '').replace(/\/+$/, '');
+
+  // Try stripping the site basename prefix.
+  let pathWithoutBase = normalized;
+  if (siteBasename) {
+    const base = siteBasename.replace(/^\//, '').replace(/\/+$/, '');
+    if (normalized.startsWith(base + '/')) {
+      pathWithoutBase = normalized.slice(base.length + 1);
+    } else if (normalized === base) {
+      pathWithoutBase = '';
+    }
+  }
+
+  // Direct lookup in the map (reverse: find ID by path).
+  for (const [id, path] of idToPath) {
+    const mapNorm = path.replace(/^\//, '').replace(/\/+$/, '');
+    if (mapNorm === pathWithoutBase || mapNorm === normalized) {
+      return id;
+    }
+  }
+
+  // "readme" pages are landing pages — their published URL is just the
+  // section path (e.g. `/documentation/`) while the API stores them as
+  // `documentation/readme`.  Check if appending `/readme` matches.
+  for (const [id, path] of idToPath) {
+    const mapNorm = path.replace(/^\//, '').replace(/\/+$/, '');
+    const withReadme = pathWithoutBase ? `${pathWithoutBase}/readme` : 'readme';
+    if (mapNorm === withReadme) {
+      return id;
+    }
+  }
+
+  // Try matching just the last segments (page path within space).
+  // E.g. crawled "j0nathanb-docs/documentation/basics/editor" → API page path "basics/editor"
+  for (const [id, path] of idToPath) {
+    const mapNorm = path.replace(/^\//, '').replace(/\/+$/, '');
+    if (mapNorm && (pathWithoutBase.endsWith(mapNorm) || normalized.endsWith(mapNorm))) {
+      return id;
+    }
+  }
+
+  return undefined;
 }

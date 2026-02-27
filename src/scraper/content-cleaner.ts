@@ -103,6 +103,11 @@ export function extractMainContent(
   // Post-process: strip common GitBook text artifacts that survive HAST cleanup.
   cleaned = stripTextArtifacts(cleaned);
 
+  // Strip prev/next navigation containers that GitBook renders at the
+  // end of content.  These contain <a> elements with "Previous"/"Next"
+  // text that pollute the MDX output.
+  cleaned = stripPrevNextNav(cleaned);
+
   return cleaned;
 }
 
@@ -121,6 +126,24 @@ function stripTextArtifacts(html: string): string {
   // Remove "Last updated X ago" or "Last modified on ..." lines.
   html = html.replace(
     /<[^>]*>Last (updated|modified)\b[^<]*<\/[^>]*>/gi,
+    '',
+  );
+
+  return html;
+}
+
+/**
+ * Strip prev/next navigation blocks from the end of content.
+ *
+ * GitBook renders navigation containers at the bottom of pages with
+ * "Previous" and "Next" links.  These appear as containers with child
+ * `<a>` elements containing spans with "Previous"/"Next" text.
+ */
+function stripPrevNextNav(html: string): string {
+  // Remove containers with Previous/Next navigation links.
+  // Pattern: a block containing <a> with "Previous" or "Next" span text.
+  html = html.replace(
+    /<(?:div|nav|footer)[^>]*>(?:[^]*?)<span[^>]*>(?:Previous|Next)<\/span>(?:[^]*?)<\/(?:div|nav|footer)>/gi,
     '',
   );
 

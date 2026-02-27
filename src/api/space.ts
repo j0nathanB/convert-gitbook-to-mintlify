@@ -1,4 +1,4 @@
-import type { GitBookPage, GitBookFile } from '../types.js';
+import type { GitBookPage, GitBookFile, GitBookPageContent } from '../types.js';
 import type { GitBookClient } from './client.js';
 
 /**
@@ -36,4 +36,21 @@ export async function fetchSpaceFiles(
   }
 
   return files;
+}
+
+/**
+ * Fetch the rich document content for a single page.
+ *
+ * Uses the `GET /spaces/{spaceId}/content/page/{pageId}` endpoint which
+ * returns structured block content (tabs, hints, embeds, etc.) that the
+ * scraper cannot reliably extract from rendered HTML.
+ */
+export async function fetchPageContent(
+  client: GitBookClient,
+  spaceId: string,
+  pageId: string,
+): Promise<GitBookPageContent> {
+  return client.get<GitBookPageContent>(
+    `/spaces/${spaceId}/content/page/${pageId}`,
+  );
 }

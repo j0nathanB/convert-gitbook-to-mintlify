@@ -123,45 +123,38 @@ async function buildNavTree(
   selectors: ScraperSelectors,
 ): Promise<NavTreeNode[]> {
   const tree: NavTreeNode[] = await page.evaluate(
-    ({ sidebarNav, sidebarItem }: { sidebarNav: string; sidebarItem: string }) => {
-      // NavTreeNode type is not available in the browser context, so we
-      // define the shape inline.
-      type NavTreeNode = {
-        label: string;
-        path?: string;
-        children: NavTreeNode[];
+    (args: { sidebarNav: string; sidebarItem: string }) => {
+      // Use arrow functions to avoid tsx/esbuild __name decorators
+      // which don't exist in the browser context.
+      const linkToNode = (anchor: HTMLAnchorElement): any => {
+        const label = (anchor.textContent ?? '').trim();
+        if (!label) return null;
+        let path: string | undefined;
+        try {
+          const url = new URL(anchor.href, window.location.origin);
+          path = url.pathname;
+        } catch {
+          path = anchor.getAttribute('href') ?? undefined;
+        }
+        return { label, path, children: [] };
       };
 
-      /**
-       * Recursively walk a container element and extract nav nodes.
-       */
-      function walkContainer(container: Element, depth: number): NavTreeNode[] {
-        const nodes: NavTreeNode[] = [];
-
-        // GitBook sidebar structures vary.  We look for:
-        //   1. Direct child `<a>` links (leaf pages).
-        //   2. Child `<div>` / `<li>` wrappers that may contain a label
-        //      + nested children (group nodes).
-
+      const walkContainer = (container: Element, depth: number): any[] => {
+        const nodes: any[] = [];
         const children = Array.from(container.children);
 
         for (const child of children) {
-          // Skip non-element nodes.
           if (child.nodeType !== Node.ELEMENT_NODE) continue;
 
-          // Case 1: The child itself is a link.
           if (child.matches('a[href]')) {
             const node = linkToNode(child as HTMLAnchorElement);
             if (node) nodes.push(node);
             continue;
           }
 
-          // Case 2: The child contains a link at top level and possibly
-          // nested children in a sub-list.
           const directLink = child.querySelector(':scope > a[href]') ??
-            child.querySelector(`:scope > ${sidebarItem}`);
+            child.querySelector(`:scope > ${args.sidebarItem}`);
 
-          // Look for nested containers (ul, ol, div with links).
           const nestedContainer =
             child.querySelector(':scope > ul') ??
             child.querySelector(':scope > ol') ??
@@ -177,58 +170,27 @@ async function buildNavTree(
               nodes.push(node);
             }
           } else if (nestedContainer) {
-            // This may be a group label without a link.
             const labelEl = child.querySelector(':scope > span, :scope > div > span, :scope > p, :scope > button');
             const label = labelEl ? (labelEl.textContent ?? '').trim() : '';
-
             if (label) {
-              const groupNode: NavTreeNode = {
-                label,
-                children: walkContainer(nestedContainer, depth + 1),
-              };
-              nodes.push(groupNode);
+              nodes.push({ label, children: walkContainer(nestedContainer, depth + 1) });
             } else {
-              // No label -- hoist the nested children.
               nodes.push(...walkContainer(nestedContainer, depth + 1));
             }
           } else {
-            // Check if the child itself is a list or container with
-            // deeper links.
             const tagLower = child.tagName.toLowerCase();
             if (tagLower === 'ul' || tagLower === 'ol') {
               nodes.push(...walkContainer(child, depth));
             } else if (child.querySelector('a[href]')) {
-              // Recurse into a wrapper div that contains links.
               nodes.push(...walkContainer(child, depth));
             }
           }
         }
-
         return nodes;
-      }
+      };
 
-      /**
-       * Convert an `<a>` element into a `NavTreeNode`.
-       */
-      function linkToNode(anchor: HTMLAnchorElement): NavTreeNode | null {
-        const label = (anchor.textContent ?? '').trim();
-        if (!label) return null;
-
-        let path: string | undefined;
-        try {
-          const url = new URL(anchor.href, window.location.origin);
-          path = url.pathname;
-        } catch {
-          path = anchor.getAttribute('href') ?? undefined;
-        }
-
-        return { label, path, children: [] };
-      }
-
-      // --- Entry point -----------------------------------------------
-      const nav = document.querySelector(sidebarNav);
-      if (!nav) return [] as NavTreeNode[];
-
+      const nav = document.querySelector(args.sidebarNav);
+      if (!nav) return [];
       return walkContainer(nav, 0);
     },
     { sidebarNav: selectors.sidebarNav, sidebarItem: selectors.sidebarItem },

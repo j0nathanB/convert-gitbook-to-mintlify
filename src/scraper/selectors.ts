@@ -38,11 +38,22 @@ export const defaultSelectors = {
 
   /** On-page table of contents sidebar (removed during cleanup). */
   toc: 'nav[aria-label="On this page"]',
-} as const;
+};
 
 // ── Derived type ─────────────────────────────────────────────────────
 
-export type ScraperSelectors = typeof defaultSelectors;
+export type ScraperSelectors = {
+  sidebarNav: string;
+  sectionsNav: string;
+  mainContent: string;
+  themeContainer: string;
+  sidebarItem: string;
+  collapsibleToggle: string;
+  copyButton: string;
+  breadcrumbs: string;
+  lastModified: string;
+  toc: string;
+};
 
 // ── Merge helper ─────────────────────────────────────────────────────
 
@@ -51,5 +62,5 @@ export type ScraperSelectors = typeof defaultSelectors;
  * Any key present in `custom` overrides the corresponding default.
  */
 export function mergeSelectors(custom: Partial<ScraperSelectors>): ScraperSelectors {
-  return { ...defaultSelectors, ...custom };
+  return { ...defaultSelectors, ...custom } as ScraperSelectors;
 }

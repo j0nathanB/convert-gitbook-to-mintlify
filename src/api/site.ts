@@ -42,10 +42,10 @@ export async function fetchSiteRedirects(
   orgId: string,
   siteId: string,
 ): Promise<GitBookRedirect[]> {
-  const body = await client.get<{ redirects: GitBookRedirect[] }>(
+  const body = await client.get<{ items: GitBookRedirect[] }>(
     `/orgs/${orgId}/sites/${siteId}/redirects`,
   );
-  return body.redirects;
+  return body.items ?? [];
 }
 
 /**

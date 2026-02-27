@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import 'dotenv/config';
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { resolve } from 'node:path';
@@ -23,6 +24,15 @@ import { buildAssetInventory, categorizeAssets } from './reconciler/asset-invent
 
 // ── Transformer ──────────────────────────────────────────────────────
 import { convertToMdx } from './transformer/mdx-converter.js';
+import { convertHtmlToMdx } from './transformer/hast-to-mdx.js';
+
+// ── Scraper ─────────────────────────────────────────────────────────
+import { crawlSite } from './scraper/crawler.js';
+import { extractNavigation } from './scraper/nav-extractor.js';
+import { extractTabs } from './scraper/tab-extractor.js';
+import { extractTheme } from './scraper/theme-extractor.js';
+import { extractMainContent, cleanScrapedContent } from './scraper/content-cleaner.js';
+import { defaultSelectors, mergeSelectors } from './scraper/selectors.js';
 
 // ── Output ───────────────────────────────────────────────────────────
 import { buildDocsJson } from './output/docs-json.js';
@@ -122,11 +132,16 @@ async function run(opts: CliOptions): Promise<void> {
     noPrompt: opts.prompt === false,
   };
 
-  if (opts.apiToken) cliOverrides.api = { ...cliOverrides.api, token: opts.apiToken };
-  if (opts.orgId) cliOverrides.api = { ...cliOverrides.api, orgId: opts.orgId };
-  if (opts.siteId) cliOverrides.api = { ...cliOverrides.api, siteId: opts.siteId };
+  // CLI flags take priority, then env vars.
+  const apiToken = opts.apiToken ?? process.env.GITBOOK_API_KEY;
+  const orgId = opts.orgId ?? process.env.GITBOOK_ORG_ID;
+  const siteId = opts.siteId ?? process.env.GITBOOK_SITE_ID;
+
+  if (apiToken) cliOverrides.api = { ...cliOverrides.api, token: apiToken };
+  if (orgId) cliOverrides.api = { ...cliOverrides.api, orgId: orgId };
+  if (siteId) cliOverrides.api = { ...cliOverrides.api, siteId: siteId };
   if (opts.source) cliOverrides.source = opts.source;
-  if (opts.url) cliOverrides.url = opts.url;
+  if (opts.url ?? process.env.GITBOOK_URL) cliOverrides.url = opts.url ?? process.env.GITBOOK_URL;
 
   const config = mergeConfigs(getDefaultConfig(), fileConfig, cliOverrides);
   const outputDir = resolve(config.output);
@@ -187,7 +202,9 @@ async function run(opts: CliOptions): Promise<void> {
         config.api.siteId!,
       );
       apiStructure = sitePublished.structure;
-      customization = sitePublished.customizations;
+      // The API nests customization under a "site" key.
+      const rawCustom = sitePublished.customizations as any;
+      customization = rawCustom?.site ?? rawCustom;
 
       logger.debug(`Site: ${sitePublished.site.title} (${sitePublished.site.id})`);
 
@@ -279,7 +296,83 @@ async function run(opts: CliOptions): Promise<void> {
   // ════════════════════════════════════════════════════════════════════
 
   if (hasScraper) {
-    logger.warn('Scraper mode not yet implemented');
+    const scraperSpinner = createSpinner('Scraping published site...').start();
+
+    try {
+      const selectors = mergeSelectors(config.scraper.selectors);
+
+      // Crawl the site to discover pages and get HTML
+      scraperSpinner.text = 'Crawling site pages...';
+      const crawlResult = await crawlSite(config.url!, {
+        concurrency: config.scraper.concurrency,
+        delayMs: config.scraper.delayMs,
+        sidebarExpansionRounds: config.scraper.sidebarExpansionRounds,
+        skipPaths: config.scraper.skipPaths,
+        authCookie: config.scraper.authCookie,
+        selectors,
+      });
+
+      if (crawlResult.errors.length > 0) {
+        for (const err of crawlResult.errors) {
+          warnings.push({ type: 'scraper', message: err, severity: 'warning' });
+        }
+      }
+
+      logger.debug(`Crawled ${crawlResult.pages.length} page(s), ${crawlResult.errors.length} error(s)`);
+
+      // Convert scraped pages to ParsedPage format
+      scraperSpinner.text = 'Converting scraped content to MDX...';
+      for (const crawledPage of crawlResult.pages) {
+        // Extract and clean main content
+        const cleanHtml = extractMainContent(crawledPage.html, selectors);
+        const mdxBody = convertHtmlToMdx(cleanHtml);
+
+        const pagePath = crawledPage.path.replace(/^\//, '') || 'index';
+        const outputPath = `${pagePath}.mdx`.replace(/\/+$/, '/index.mdx');
+
+        parsedPages.push({
+          path: outputPath,
+          title: crawledPage.title,
+          frontmatter: {},
+          rawBody: mdxBody,
+          gitbookBlocks: [],
+          images: [],
+          internalLinks: [],
+        });
+
+        // Build a nav structure from crawled pages if we don't have one from API/source
+        if (summaryTabs.length === 0) {
+          // We'll build tabs from the crawled structure after the loop
+        }
+      }
+
+      // If no API or source nav, build nav from crawled pages
+      if (summaryTabs.length === 0 && parsedPages.length > 0) {
+        const defaultGroup = {
+          label: 'Documentation',
+          pages: parsedPages.map((p) => ({
+            label: p.title || p.path.replace(/\.mdx$/, '').split('/').pop() || 'Untitled',
+            path: p.path,
+          })),
+        };
+        summaryTabs = [{
+          label: 'Documentation',
+          slug: 'documentation',
+          groups: [defaultGroup],
+        }];
+      }
+
+      scraperSpinner.succeed(
+        `Scraped ${crawlResult.pages.length} page(s) from ${config.url}`,
+      );
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      scraperSpinner.fail(`Scraping failed: ${message}`);
+      if (message.includes('Cannot find module') && message.includes('playwright')) {
+        logger.error('Playwright is not installed. Install it with: npm install playwright && npx playwright install chromium');
+      }
+      throw error;
+    }
   }
 
   // ════════════════════════════════════════════════════════════════════
@@ -353,17 +446,31 @@ async function run(opts: CliOptions): Promise<void> {
     for (const page of parsedPages) {
       transformSpinner.text = `Converting ${page.path}...`;
 
-      const mdxContent = convertToMdx(page, {
-        linkMap,
-        imageMap,
-        removeFirstH1: config.transforms.removeFirstH1,
-        strict: config.strict,
-      });
+      let mdxContent: string;
+      if (hasScraper && !hasSource && page.gitbookBlocks.length === 0) {
+        // Scraped pages: rawBody is already MDX from convertHtmlToMdx.
+        // Just add frontmatter.
+        const fm = [
+          '---',
+          `title: "${(page.title || '').replace(/"/g, '\\"')}"`,
+          '---',
+        ].join('\n');
+        mdxContent = `${fm}\n\n${page.rawBody}\n`;
+      } else {
+        mdxContent = convertToMdx(page, {
+          linkMap,
+          imageMap,
+          removeFirstH1: config.transforms.removeFirstH1,
+          strict: config.strict,
+        });
+      }
 
-      // Compute output path: strip .md extension and add .mdx
+      // Compute output path: ensure .mdx extension
       const outputPath = page.path
-        .replace(/\.md$/, '.mdx')
-        .replace(/^\/+/, '');
+        .replace(/\.md$/, '')
+        .replace(/\.mdx$/, '')
+        .replace(/^\/+/, '')
+        + '.mdx';
 
       convertedPages.push({ outputPath, content: mdxContent });
     }

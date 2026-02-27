@@ -79,17 +79,44 @@ export function extractMainContent(
   // Find the main content node.
   const mainNode = findMatchingNode(tree, selectors.mainContent);
 
+  let cleaned: string;
   if (mainNode) {
     // Wrap in a synthetic root so serialization works.
     const syntheticRoot: Root = {
       type: 'root',
       children: [mainNode],
     };
-    return serializeHast(syntheticRoot);
+    cleaned = serializeHast(syntheticRoot);
+  } else {
+    // Fallback: return the entire cleaned document.
+    cleaned = serializeHast(tree);
   }
 
-  // Fallback: return the entire cleaned document.
-  return serializeHast(tree);
+  // Post-process: strip common GitBook text artifacts that survive HAST cleanup.
+  cleaned = stripTextArtifacts(cleaned);
+
+  return cleaned;
+}
+
+// ── Text-level artifact stripping ─────────────────────────────────────
+
+/**
+ * Remove common GitBook UI text artifacts that survive HAST element removal.
+ * These include standalone "Copy" text from code block buttons and
+ * "Last updated/modified" timestamps.
+ */
+function stripTextArtifacts(html: string): string {
+  // Remove "Copy" button text that appears as standalone text near code blocks.
+  // It typically appears right before <pre> or as a standalone line.
+  html = html.replace(/<button[^>]*>Copy<\/button>/gi, '');
+
+  // Remove "Last updated X ago" or "Last modified on ..." lines.
+  html = html.replace(
+    /<[^>]*>Last (updated|modified)\b[^<]*<\/[^>]*>/gi,
+    '',
+  );
+
+  return html;
 }
 
 // ── HAST parsing & serialization ─────────────────────────────────────

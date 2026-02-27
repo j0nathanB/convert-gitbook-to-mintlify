@@ -13,6 +13,7 @@
 
 import type { ScraperSelectors } from './selectors.js';
 import { extractNavigation } from './nav-extractor.js';
+import { extractTabs } from './tab-extractor.js';
 import { logger } from '../utils/logger.js';
 
 // Compile-time only -- never a hard require.
@@ -95,11 +96,52 @@ export async function crawlSite(
 
     // Flatten the nav tree into a deduplicated list of absolute URLs.
     const origin = new URL(url).origin;
-    const pageUrls = deduplicateUrls(
-      flattenNavUrls(navTree, origin),
+    const allDiscoveredUrls: string[] = flattenNavUrls(navTree, origin);
+
+    // --- Also discover pages from tabs (sections) ----------------------
+    // GitBook sites with multiple tabs render each tab's pages in a
+    // separate sidebar. Visit each tab URL and extract its sidebar nav.
+    logger.info('Checking for tab sections...');
+    const tabs = await extractTabs(rootPage, options.selectors);
+    if (tabs.length > 0) {
+      logger.info(`Found ${tabs.length} tab(s): ${tabs.map((t) => t.label).join(', ')}`);
+      for (const tab of tabs) {
+        allDiscoveredUrls.push(tab.url);
+        try {
+          const tabPage = await context.newPage();
+          await tabPage.goto(tab.url, { waitUntil: 'networkidle', timeout: 30_000 });
+          const tabNavTree = await extractNavigation(
+            tabPage,
+            options.selectors,
+            options.sidebarExpansionRounds,
+          );
+          allDiscoveredUrls.push(...flattenNavUrls(tabNavTree, origin));
+          await tabPage.close();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.warn(`Failed to extract nav from tab "${tab.label}": ${msg}`);
+          errors.push(`Tab "${tab.label}" nav extraction failed: ${msg}`);
+        }
+      }
+    }
+
+    // --- Also discover pages from internal links in page body ----------
+    // GitBook sites may embed navigation in the page content itself
+    // (hero cards, feature links, etc.) rather than in a sidebar.
+    const bodyLinks = await rootPage.$$eval(
+      'a[href]',
+      (anchors: HTMLAnchorElement[], baseOrigin: string) => {
+        return anchors
+          .map((a) => {
+            try { return new URL(a.href, baseOrigin).href; } catch { return ''; }
+          })
+          .filter((href) => href.startsWith(baseOrigin));
+      },
       origin,
-      options.skipPaths,
     );
+    allDiscoveredUrls.push(...bodyLinks);
+
+    const pageUrls = deduplicateUrls(allDiscoveredUrls, origin, options.skipPaths);
 
     // Always include the root URL itself.
     const rootNormalized = normalizeUrl(url);
@@ -113,11 +155,14 @@ export async function crawlSite(
     await rootPage.close();
 
     // --- Fetch pages concurrently in batches ---------------------------
+    // Use a queue so newly discovered links can be added during crawling.
     const pages: CrawledPage[] = [];
     const concurrency = Math.max(1, options.concurrency);
+    const visited = new Set(pageUrls.map(normalizeUrl));
+    const queue = [...pageUrls];
 
-    for (let i = 0; i < pageUrls.length; i += concurrency) {
-      const batch = pageUrls.slice(i, i + concurrency);
+    while (queue.length > 0) {
+      const batch = queue.splice(0, concurrency);
 
       const results = await Promise.allSettled(
         batch.map((pageUrl) => fetchPage(context, pageUrl, options)),
@@ -126,6 +171,27 @@ export async function crawlSite(
       for (const result of results) {
         if (result.status === 'fulfilled' && result.value) {
           pages.push(result.value);
+
+          // Discover new internal links from each fetched page.
+          const newLinks = extractInternalLinks(result.value.html, origin);
+          for (const link of newLinks) {
+            const norm = normalizeUrl(link);
+            let pathname: string;
+            try {
+              pathname = new URL(link).pathname;
+            } catch { continue; }
+
+            // Skip .md links, non-content patterns, and user-defined skip paths.
+            if (pathname.endsWith('.md')) continue;
+            if (SKIP_PATH_PATTERNS.some((re) => re.test(pathname))) continue;
+            const shouldSkip = options.skipPaths.some(
+              (prefix) => pathname === prefix || pathname.startsWith(prefix + '/'),
+            );
+            if (!visited.has(norm) && !shouldSkip) {
+              visited.add(norm);
+              queue.push(link);
+            }
+          }
         } else if (result.status === 'rejected') {
           const msg = result.reason instanceof Error
             ? result.reason.message
@@ -136,7 +202,7 @@ export async function crawlSite(
       }
 
       // Delay between batches.
-      if (options.delayMs > 0 && i + concurrency < pageUrls.length) {
+      if (options.delayMs > 0 && queue.length > 0) {
         await delay(options.delayMs);
       }
     }
@@ -236,7 +302,20 @@ function flattenNavUrls(
 }
 
 /**
- * Deduplicate URLs (by pathname) and remove any that match `skipPaths`.
+ * URL path patterns that are never real documentation pages.
+ * These are GitBook internal resources, feeds, and metadata.
+ */
+const SKIP_PATH_PATTERNS = [
+  /\/~gitbook\//,       // GitBook internal resources (icons, images, etc.)
+  /\/rss\.xml$/,        // RSS feeds
+  /\/readme\.md$/i,     // readme.md redirects
+  /\/sitemap\.xml$/,    // Sitemaps
+  /\/robots\.txt$/,     // Robots
+];
+
+/**
+ * Deduplicate URLs (by pathname) and remove any that match `skipPaths`
+ * or known non-content patterns.
  */
 function deduplicateUrls(
   urls: string[],
@@ -251,12 +330,27 @@ function deduplicateUrls(
 
     if (seen.has(normalized)) continue;
 
-    const pathname = new URL(u).pathname;
+    let pathname: string;
+    try {
+      const parsed = new URL(u);
+      pathname = parsed.pathname;
+      // Skip URLs with query parameters (likely GitBook API/resource URLs).
+      if (parsed.search) continue;
+    } catch {
+      continue;
+    }
+
     const shouldSkip = skipPaths.some(
       (prefix) => pathname === prefix || pathname.startsWith(prefix + '/'),
     );
-
     if (shouldSkip) continue;
+
+    // Skip known non-content patterns.
+    if (SKIP_PATH_PATTERNS.some((re) => re.test(pathname))) continue;
+
+    // Skip .md URLs entirely — GitBook redirects them to the clean path,
+    // which we'll crawl separately.
+    if (pathname.endsWith('.md')) continue;
 
     seen.add(normalized);
     result.push(u);
@@ -275,6 +369,36 @@ function normalizeUrl(raw: string): string {
   } catch {
     return raw;
   }
+}
+
+/**
+ * Extract internal links from an HTML string.
+ * Returns absolute URLs that belong to the same origin, excluding
+ * known non-content patterns.
+ */
+function extractInternalLinks(html: string, origin: string): string[] {
+  const urls: string[] = [];
+  const hrefRe = /href="([^"]+)"/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = hrefRe.exec(html)) !== null) {
+    try {
+      const parsed = new URL(match[1], origin);
+      const abs = parsed.href;
+      if (
+        abs.startsWith(origin) &&
+        !parsed.hash &&
+        !parsed.search &&
+        !SKIP_PATH_PATTERNS.some((re) => re.test(parsed.pathname))
+      ) {
+        urls.push(abs);
+      }
+    } catch {
+      // Skip malformed URLs.
+    }
+  }
+
+  return urls;
 }
 
 /**

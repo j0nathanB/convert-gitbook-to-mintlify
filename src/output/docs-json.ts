@@ -55,7 +55,11 @@ function detectPlatform(url: string): string | null {
  */
 function mapNavGroup(group: NavGroup): DocsNavGroup {
   const pages: (string | DocsNavGroup)[] = group.pages.map(
-    (page: NavPage) => page.outputPath ?? page.path,
+    (page: NavPage) => {
+      // Mintlify expects extensionless page references in docs.json.
+      const raw = page.outputPath ?? page.path;
+      return raw.replace(/\.(mdx|md)$/, '');
+    },
   );
 
   // Nested sub-groups

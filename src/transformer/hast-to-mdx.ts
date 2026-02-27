@@ -57,6 +57,17 @@ export function convertHtmlToMdx(html: string): string {
   // Step 4: Replace placeholders with actual MDX component markup.
   mdx = restorePlaceholders(mdx, components);
 
+  // Strip common GitBook UI artifacts that survive HTML → MDX conversion.
+  // HTML comments are invalid in MDX — convert or remove them.
+  mdx = mdx.replace(/<!--[\s\S]*?-->/g, '');
+  // Remove GitBook-style heading anchors: "## [](#slug)Title" → "## Title"
+  // Mintlify auto-generates heading IDs from the text.
+  mdx = mdx.replace(/^(#{1,6})\s*\[(?:[^\]]*)\]\(#[^)]*\)\s*/gm, '$1 ');
+  // "Copy" standalone line from code block copy buttons.
+  mdx = mdx.replace(/^Copy\n\n/gm, '');
+  // "Last updated/modified ..." lines at the end.
+  mdx = mdx.replace(/\n*Last (updated|modified)\b[^\n]*/gi, '');
+
   // Clean up excessive blank lines.
   mdx = mdx.replace(/\n{3,}/g, '\n\n').trim();
 

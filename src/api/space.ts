@@ -30,7 +30,7 @@ export async function fetchSpaceFiles(
   const files: GitBookFile[] = [];
 
   for await (const file of client.paginate<GitBookFile>(
-    `/spaces/${spaceId}/files`,
+    `/spaces/${spaceId}/content/files`,
   )) {
     files.push(file);
   }

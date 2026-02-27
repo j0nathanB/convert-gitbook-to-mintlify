@@ -200,7 +200,18 @@ function renderExpandable(node: GitBookDocumentNode, ctx: RenderContext): string
 function renderEmbed(node: GitBookDocumentNode): string {
   const url = node.data?.url;
   if (!url) return '';
-  return `<Frame src="${escapeAttr(url)}" />`;
+
+  // YouTube: convert watch URLs to embed format and use an iframe.
+  const ytMatch = url.match(
+    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([\w-]+)/,
+  );
+  if (ytMatch) {
+    const videoId = ytMatch[1];
+    return `<iframe className="w-full aspect-video rounded-xl" src="https://www.youtube.com/embed/${videoId}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen></iframe>`;
+  }
+
+  // Generic embed — use an iframe so content actually renders.
+  return `<iframe className="w-full aspect-video rounded-xl" src="${escapeAttr(url)}" allowFullScreen></iframe>`;
 }
 
 function renderCodeBlock(node: GitBookDocumentNode): string {

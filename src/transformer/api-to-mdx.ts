@@ -449,7 +449,9 @@ function renderCardTable(node: GitBookDocumentNode, ctx: RenderContext): string 
       }
     }
 
-    // Extract title and description from display columns.
+    // Extract title, description, icon, and extra content from display columns.
+    let icon = '';
+    let extraContent = '';
     for (const colId of displayColumns) {
       const def = definitionMap[colId];
       if (!def) continue;
@@ -457,25 +459,70 @@ function renderCardTable(node: GitBookDocumentNode, ctx: RenderContext): string 
       if (!val) continue;
 
       if (def.type === 'text') {
-        const text = resolveFragmentText(val, fragmentByKey, positionalFragments);
-        if (!title) title = text;
-        else if (!description) description = text;
+        // Resolve the fragment and check for inline icon/button nodes.
+        const fragment = typeof val === 'string'
+          ? (fragmentByKey.get(val) ?? positionalFragments.get(val))
+          : null;
+        const fragmentIcon = fragment ? extractFragmentIcon(fragment) : '';
+        const fragmentButton = fragment ? extractFragmentButton(fragment, ctx) : '';
+
+        if (fragmentIcon) {
+          icon = fragmentIcon;
+        } else if (fragmentButton) {
+          extraContent += (extraContent ? '\n' : '') + fragmentButton;
+        } else {
+          const text = resolveFragmentText(val, fragmentByKey, positionalFragments);
+          if (!title) title = text;
+          else if (!description) description = text;
+        }
       }
     }
 
     if (title || href) {
       let cardAttrs = `title="${escapeAttr(title || 'Card')}"`;
+      if (icon) cardAttrs += ` icon="${escapeAttr(icon)}"`;
       if (href) cardAttrs += ` href="${escapeAttr(href)}"`;
       if (coverImage) cardAttrs += ` img="${escapeAttr(coverImage)}"`;
 
-      cards.push(description
-        ? `<Card ${cardAttrs}>\n${description}\n</Card>`
+      const body = [description, extraContent].filter(Boolean).join('\n\n');
+      cards.push(body
+        ? `<Card ${cardAttrs}>\n${body}\n</Card>`
         : `<Card ${cardAttrs} />`);
     }
   }
 
   if (cards.length === 0) return '';
   return `<CardGroup cols={${cols}}>\n${cards.join('\n')}\n</CardGroup>`;
+}
+
+/**
+ * Extract an icon name from a card table fragment, if it contains an
+ * inline `icon` node (e.g. `:discord:`, `:github:`).
+ */
+function extractFragmentIcon(fragment: any): string {
+  for (const node of fragment.nodes ?? []) {
+    for (const child of node.nodes ?? []) {
+      if (child.type === 'icon' && child.data?.icon) {
+        return child.data.icon;
+      }
+    }
+  }
+  return '';
+}
+
+/**
+ * Extract a rendered button from a card table fragment, if it contains
+ * an inline `button` node.
+ */
+function extractFragmentButton(fragment: any, ctx: RenderContext): string {
+  for (const node of fragment.nodes ?? []) {
+    for (const child of node.nodes ?? []) {
+      if (child.type === 'button') {
+        return renderButton(child, ctx);
+      }
+    }
+  }
+  return '';
 }
 
 /**
@@ -619,6 +666,9 @@ function renderButton(node: GitBookDocumentNode, ctx: RenderContext): string {
     } else if (ref.kind === 'page' && ref.page) {
       url = ctx.pageIdToPath.get(ref.page) ?? '';
       if (url && !url.startsWith('/')) url = '/' + url;
+    } else if (ref.kind === 'space' && ref.space) {
+      url = ctx.spaceIdToPath.get(ref.space) ?? '';
+      if (url && !url.startsWith('/')) url = '/' + url;
     }
   }
 
@@ -750,6 +800,11 @@ function renderInlineChildren(node: GitBookDocumentNode, ctx: RenderContext): st
       // Inline image.
       if (child.type === 'image' || child.type === 'images') {
         return renderImage(child);
+      }
+
+      // Inline button.
+      if (child.type === 'button') {
+        return renderButton(child, ctx);
       }
 
       // Inline code or other inline blocks — try leaves, then recurse.

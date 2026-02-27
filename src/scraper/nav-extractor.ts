@@ -24,19 +24,41 @@ import type { Page } from 'playwright';
  * an uppercase transition) and returns just the human-readable part.
  */
 export function cleanIconLabel(raw: string): string {
+  return cleanIconLabelWithIcon(raw).label;
+}
+
+/**
+ * Strip a lowercase-only icon-name prefix from GitBook labels and
+ * return both the cleaned label and the extracted icon name.
+ *
+ * GitBook renders icon names as text nodes before the real label,
+ * producing strings like `"boltQuickstart"` or `"book-blankDocumentation"`.
+ * The lowercase/dash prefix is the Font Awesome icon name.
+ */
+export function cleanIconLabelWithIcon(raw: string): { label: string; icon?: string } {
   // Match: one or more lowercase/dash chars, then an uppercase letter
-  // starting the real label.  E.g. "boltQuickstart" → "Quickstart",
-  // "book-blankDocumentation" → "Documentation".
-  const m = raw.match(/^[a-z][a-z0-9-]*([A-Z].*)$/);
-  return m ? m[1] : raw;
+  // starting the real label.  E.g. "boltQuickstart" → icon "bolt", label "Quickstart",
+  // "book-blankDocumentation" → icon "book-blank", label "Documentation".
+  const m = raw.match(/^([a-z][a-z0-9-]*)([A-Z].*)$/);
+  if (m) {
+    return { label: m[2], icon: m[1] };
+  }
+  return { label: raw };
 }
 
 /**
  * Recursively clean icon-text prefixed labels in a NavTreeNode tree.
+ * Also sets `node.icon` from the label prefix when the node doesn't
+ * already have an icon (SVG-derived icons take priority).
  */
 export function cleanNavTreeLabels(nodes: NavTreeNode[]): NavTreeNode[] {
   for (const node of nodes) {
-    node.label = cleanIconLabel(node.label);
+    const { label, icon } = cleanIconLabelWithIcon(node.label);
+    node.label = label;
+    // SVG-derived icon (set in linkToNode) takes priority over label-derived.
+    if (!node.icon && icon) {
+      node.icon = icon;
+    }
     if (node.children?.length) {
       cleanNavTreeLabels(node.children);
     }
@@ -203,7 +225,14 @@ async function buildNavTree(
         } catch(e) {
           path = anchor.getAttribute('href') || undefined;
         }
-        return { label: label, path: path, children: [] };
+        var icon;
+        var svgTitle = anchor.querySelector('svg title');
+        if (svgTitle && svgTitle.textContent) {
+          icon = svgTitle.textContent.trim();
+        }
+        var result = { label: label, path: path, children: [] };
+        if (icon) result.icon = icon;
+        return result;
       };
 
       var walkContainer = function(container, depth) {

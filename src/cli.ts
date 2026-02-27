@@ -566,6 +566,14 @@ async function run(opts: CliOptions): Promise<void> {
   // Phase 5: Content Transformation
   // ════════════════════════════════════════════════════════════════════
 
+  // Build a lookup from output path → icon for injecting into frontmatter.
+  const pageIconMap = new Map<string, string>();
+  for (const tab of reconciledTabs) {
+    for (const group of tab.groups) {
+      collectPageIcons(group, pageIconMap);
+    }
+  }
+
   const transformSpinner = createSpinner('Transforming content to MDX...').start();
 
   const convertedPages: Array<{ outputPath: string; content: string }> = [];
@@ -595,10 +603,21 @@ async function run(opts: CliOptions): Promise<void> {
           });
         }
 
+        // Look up the page icon from the nav structure.
+        const pageOutputPath = page.path
+          .replace(/\.md$/, '')
+          .replace(/\.mdx$/, '')
+          .replace(/^\/+/, '')
+          + '.mdx';
+        const pageIcon = pageIconMap.get(pageOutputPath);
+
         const fmLines = [
           '---',
           `title: "${cleanTitle.replace(/"/g, '\\"')}"`,
         ];
+        if (pageIcon) {
+          fmLines.push(`icon: "${pageIcon}"`);
+        }
         if (page.frontmatter.mode) {
           fmLines.push(`mode: "${page.frontmatter.mode}"`);
         }
@@ -942,7 +961,7 @@ function buildNavTabsFromCrawledTabs(
         }
       }
 
-      navTabs.push({ label: tab.label, slug, groups });
+      navTabs.push({ label: tab.label, slug, groups, ...(tab.icon ? { icon: tab.icon } : {}) });
     } else {
       // Tab with no sidebar (Home, Changelog, etc.) — single page.
       const tabPath = pathFromUrl(tab.url);
@@ -951,6 +970,7 @@ function buildNavTabsFromCrawledTabs(
         navTabs.push({
           label: tab.label,
           slug,
+          ...(tab.icon ? { icon: tab.icon } : {}),
           groups: [{
             label: tab.label,
             pages: [{
@@ -992,7 +1012,7 @@ function navTreeToGroups(nodes: NavTreeNode[], defaultLabel: string): NavGroup[]
     } else if (node.path) {
       const outPath = nodePathToOutputPath(node.path);
       if (outPath && outPath !== '.mdx') {
-        currentPages.push({ label: node.label, path: outPath });
+        currentPages.push({ label: node.label, path: outPath, ...(node.icon ? { icon: node.icon } : {}) });
       }
       // Also include any children as pages in the same run.
       if (node.children?.length > 0) {
@@ -1020,7 +1040,7 @@ function flattenTreeToPages(nodes: NavTreeNode[]): NavPage[] {
       const outPath = nodePathToOutputPath(node.path);
       // Skip empty paths or bare ".mdx" (from empty/root-only pathnames).
       if (outPath && outPath !== '.mdx') {
-        pages.push({ label: node.label, path: outPath });
+        pages.push({ label: node.label, path: outPath, ...(node.icon ? { icon: node.icon } : {}) });
       }
     }
     if (node.children?.length > 0) {
@@ -1058,4 +1078,23 @@ function findParsedPage(
 ): ParsedPage | undefined {
   const norm = pathname.replace(/^\//, '').replace(/\/+$/, '');
   return index.get(norm) ?? index.get(norm + '/index');
+}
+
+/**
+ * Recursively collect page icons from nav groups into a path→icon map.
+ */
+function collectPageIcons(
+  group: NavGroup,
+  iconMap: Map<string, string>,
+): void {
+  for (const page of group.pages) {
+    if (page.icon) {
+      iconMap.set(page.path, page.icon);
+    }
+  }
+  if (group.groups) {
+    for (const sub of group.groups) {
+      collectPageIcons(sub, iconMap);
+    }
+  }
 }

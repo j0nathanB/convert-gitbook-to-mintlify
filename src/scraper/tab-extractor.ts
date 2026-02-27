@@ -7,7 +7,7 @@
  */
 
 import type { ScraperSelectors } from './selectors.js';
-import { cleanIconLabel } from './nav-extractor.js';
+import { cleanIconLabelWithIcon } from './nav-extractor.js';
 
 // Use `import type` for Playwright types -- the actual import is dynamic.
 import type { Page } from 'playwright';
@@ -26,7 +26,7 @@ import type { Page } from 'playwright';
 export async function extractTabs(
   page: any,
   selectors: ScraperSelectors,
-): Promise<Array<{ label: string; url: string }>> {
+): Promise<Array<{ label: string; url: string; icon?: string }>> {
   const p = page as Page;
 
   const sectionsNav = await p.$(selectors.sectionsNav);
@@ -36,17 +36,28 @@ export async function extractTabs(
 
   const links = await sectionsNav.$$('a[href]');
 
-  const tabs: Array<{ label: string; url: string }> = [];
+  const tabs: Array<{ label: string; url: string; icon?: string }> = [];
 
   for (const link of links) {
     const rawLabel = ((await link.textContent()) ?? '').trim();
-    const label = cleanIconLabel(rawLabel);
+    const { label, icon: labelIcon } = cleanIconLabelWithIcon(rawLabel);
     const href = (await link.getAttribute('href')) ?? '';
+
+    // Try to extract icon from SVG <title> element inside the link.
+    const svgIcon = await link.evaluate(
+      (el: Element) => {
+        const title = el.querySelector('svg title');
+        return title?.textContent?.trim() || null;
+      },
+    );
+
+    // SVG-derived icon takes priority over label-derived.
+    const icon = svgIcon || labelIcon;
 
     if (label && href) {
       // Resolve relative URLs against the page origin.
       const resolvedUrl = new URL(href, p.url()).href;
-      tabs.push({ label, url: resolvedUrl });
+      tabs.push({ label, url: resolvedUrl, ...(icon ? { icon } : {}) });
     }
   }
 

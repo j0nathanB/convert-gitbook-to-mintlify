@@ -83,6 +83,7 @@ function mergeWithApi(
         apiPaths,
         discrepancies,
       ),
+      ...(summaryTab.icon ? { icon: summaryTab.icon } : {}),
     };
 
     merged.push(tab);

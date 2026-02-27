@@ -78,6 +78,7 @@ function mapNavGroup(group: NavGroup): DocsNavGroup {
 function buildNavigation(tabs: NavTab[]): DocsNavTab[] {
   return tabs.map((tab) => ({
     tab: tab.label,
+    ...(tab.icon ? { icon: tab.icon } : {}),
     groups: tab.groups.map(mapNavGroup),
   }));
 }

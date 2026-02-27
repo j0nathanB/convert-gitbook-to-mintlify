@@ -66,6 +66,8 @@ export interface CrawledTab {
   slug: string;
   /** Sidebar navigation tree extracted from this tab's page. */
   navTree: NavTreeNode[];
+  /** Font Awesome icon name extracted from the tab link's SVG. */
+  icon?: string;
 }
 
 export interface CrawlResult {
@@ -154,6 +156,7 @@ export async function crawlSite(
           url: tab.url,
           slug: deriveSlug(tab.url, origin),
           navTree: tabNavTree,
+          ...(tab.icon ? { icon: tab.icon } : {}),
         });
       }
     }

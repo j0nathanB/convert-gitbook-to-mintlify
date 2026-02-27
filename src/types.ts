@@ -117,6 +117,7 @@ export interface NavTreeNode {
   isOrphan?: boolean;
   hasContent?: boolean;  // for parent-with-children disambiguation
   sourceFile?: string;   // which SUMMARY.md this came from
+  icon?: string;         // Font Awesome icon name (e.g. "bolt", "house")
 }
 
 export interface NavTab {
@@ -124,6 +125,7 @@ export interface NavTab {
   slug: string;
   sourceFile?: string;
   groups: NavGroup[];
+  icon?: string;         // Font Awesome icon name for tab
 }
 
 export interface NavGroup {
@@ -136,6 +138,7 @@ export interface NavPage {
   label: string;
   path: string;
   outputPath?: string;
+  icon?: string;         // Font Awesome icon name for page
 }
 
 export interface ParsedPage {
@@ -215,6 +218,7 @@ export type DocsNavItem = DocsNavTab | DocsNavGroup | string;
 export interface DocsNavTab {
   tab: string;
   groups: DocsNavGroup[];
+  icon?: string;         // Font Awesome icon name for tab
 }
 
 export interface DocsNavGroup {

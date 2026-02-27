@@ -411,6 +411,62 @@ async function run(opts: CliOptions): Promise<void> {
         }];
       }
 
+      // Extract theme/logo from the first crawled page if available.
+      if (crawlResult.pages.length > 0) {
+        scraperSpinner.text = 'Extracting theme from scraped page...';
+        try {
+          const { chromium } = await import('playwright');
+          const browser = await chromium.launch({ headless: true });
+          const themePage = await browser.newPage();
+          await themePage.goto(config.url!, { waitUntil: 'networkidle', timeout: 30_000 });
+          const scraped = await extractTheme(themePage, selectors);
+          await browser.close();
+
+          // Use scraped logo/favicon as fallback when API didn't provide them.
+          const hasApiLogo = customization?.header?.logo?.light || customization?.header?.logo?.dark;
+          if (scraped.logo && !hasApiLogo) {
+            const origin = new URL(config.url!).origin;
+            const resolveUrl = (src: string) =>
+              src.startsWith('http') ? src : `${origin}${src}`;
+
+            // GitBook often hides the dark variant via CSS (hidden dark:block).
+            // If only the light icon was found, infer the dark URL by swapping
+            // the theme query parameter.
+            let darkUrl = scraped.logo.dark;
+            if (!darkUrl && scraped.logo.light?.includes('theme=light')) {
+              darkUrl = scraped.logo.light.replace('theme=light', 'theme=dark');
+            }
+
+            if (!customization) {
+              customization = {} as any;
+            }
+            customization!.header = customization!.header ?? {};
+            customization!.header.logo = {
+              light: scraped.logo.light ? resolveUrl(scraped.logo.light) : undefined,
+              dark: darkUrl ? resolveUrl(darkUrl) : undefined,
+            };
+            logger.info('Using scraped logo URLs as fallback');
+          }
+
+          const hasApiFavicon = (() => {
+            const icon = customization?.favicon?.icon;
+            if (!icon) return false;
+            if (typeof icon === 'string') return !!icon;
+            return !!(icon.light || icon.dark);
+          })();
+          if (scraped.favicon && !hasApiFavicon) {
+            if (!customization) {
+              customization = {} as any;
+            }
+            customization!.favicon = { icon: scraped.favicon.value };
+            logger.info('Using scraped favicon URL as fallback');
+          }
+        } catch (themeErr) {
+          const msg = themeErr instanceof Error ? themeErr.message : String(themeErr);
+          logger.warn(`Theme extraction from scraper failed: ${msg}`);
+        }
+      }
+
       scraperSpinner.succeed(
         `Scraped ${crawlResult.pages.length} page(s) from ${config.url}`,
       );

@@ -26,6 +26,7 @@ import { buildAssetInventory, categorizeAssets } from './reconciler/asset-invent
 import { convertToMdx } from './transformer/mdx-converter.js';
 import { convertHtmlToMdx } from './transformer/hast-to-mdx.js';
 import { apiDocumentToMdx } from './transformer/api-to-mdx.js';
+import type { ColumnsBlockInfo } from './transformer/api-to-mdx.js';
 
 // ── Scraper ─────────────────────────────────────────────────────────
 import { crawlSite } from './scraper/crawler.js';
@@ -90,7 +91,8 @@ program
   .option('--dry-run', 'Report only, no output files')
   .option('--strict', 'Error on unrecognized GitBook blocks')
   .option('--no-prompt', 'Skip interactive branding prompts')
-  .option('--verbose', 'Enable debug logging');
+  .option('--verbose', 'Enable debug logging')
+  .option('--columns-mode <mode>', 'How to render column layouts: stacked, cards, or skip', 'stacked');
 
 program.action(async (opts) => {
   try {
@@ -121,6 +123,7 @@ interface CliOptions {
   strict?: boolean;
   prompt?: boolean;   // commander stores --no-prompt as opts.prompt = false
   verbose?: boolean;
+  columnsMode?: 'stacked' | 'cards' | 'skip';
 }
 
 async function run(opts: CliOptions): Promise<void> {
@@ -189,6 +192,8 @@ async function run(opts: CliOptions): Promise<void> {
   let summaryTabs: NavTab[] = [];
   let parsedPages: ParsedPage[] = [];
   const warnings: MigrationWarning[] = [];
+  const columnsReview: { path: string; blocks: ColumnsBlockInfo[] }[] = [];
+  const columnsMode = opts.columnsMode ?? 'stacked';
 
   // Map from GitBook page ID → output path (for resolving content-ref / button links).
   const pageIdToPath = new Map<string, string>();
@@ -431,11 +436,20 @@ async function run(opts: CliOptions): Promise<void> {
                 const pageContent = await fetchPageContent(apiClient, spaceId, pageId);
 
                 if (pageContent.document?.nodes) {
-                  mdxBody = apiDocumentToMdx(pageContent.document.nodes, pageIdToPath, {
+                  const result = apiDocumentToMdx(pageContent.document.nodes, pageIdToPath, {
                     fileIdToUrl,
                     spaceIdToPath,
+                    columnsMode,
                   });
+                  mdxBody = result.mdx;
                   usedApi = true;
+
+                  if (result.columnsBlocks.length > 0) {
+                    columnsReview.push({ path: outputPath, blocks: result.columnsBlocks });
+                    logger.warn(
+                      `Column layout on ${outputPath} flattened (${result.columnsBlocks.length} block(s)). See QA report.`,
+                    );
+                  }
 
                   // Use API layout metadata for frontmatter mode.
                   if (pageContent.layout) {
@@ -838,6 +852,14 @@ async function run(opts: CliOptions): Promise<void> {
             message: `Image referenced but not found: ${a.sourcePath}`,
             severity: 'warning' as const,
           })),
+          ...columnsReview.flatMap((entry) =>
+            entry.blocks.map((block) => ({
+              type: 'columns_layout',
+              path: entry.path,
+              message: `Column layout (${block.columnCount} cols) rendered as ${columnsMode}. Original: ${block.contentSummary.join(' | ')}.`,
+              severity: 'warning' as const,
+            })),
+          ),
         ],
         manualReviewQueue: [
           ...categorized.missing.map((a) => ({
@@ -846,6 +868,13 @@ async function run(opts: CliOptions): Promise<void> {
             severity: 'medium' as const,
           })),
           ...themeReviewItems,
+          ...columnsReview.flatMap((entry) =>
+            entry.blocks.map((block) => ({
+              path: entry.path,
+              reason: `Column layout (${block.columnCount} cols) rendered as ${columnsMode}. Original: ${block.contentSummary.join(' | ')}. Mintlify has no freeform columns — consider manual layout adjustment.`,
+              severity: 'medium' as const,
+            })),
+          ),
         ],
       });
 
@@ -888,7 +917,17 @@ async function run(opts: CliOptions): Promise<void> {
         scraper: hasScraper,
       },
       discrepancies,
-      warnings,
+      warnings: [
+        ...warnings,
+        ...columnsReview.flatMap((entry) =>
+          entry.blocks.map((block) => ({
+            type: 'columns_layout',
+            path: entry.path,
+            message: `Column layout (${block.columnCount} cols) rendered as ${columnsMode}. Original: ${block.contentSummary.join(' | ')}.`,
+            severity: 'warning' as const,
+          })),
+        ),
+      ],
     });
 
     logger.info(chalk.bold('\nDry Run Report:'));

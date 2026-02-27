@@ -12,6 +12,11 @@ import type { GitBookDocumentNode, GitBookDocumentLeaf } from '../types.js';
 
 // ── Public API ───────────────────────────────────────────────────────
 
+export interface ColumnsBlockInfo {
+  columnCount: number;
+  contentSummary: string[];  // e.g. ["heading + paragraph + buttons", "code block"]
+}
+
 /**
  * Convert a GitBook API document (array of block nodes) into a
  * Mintlify-compatible MDX string.
@@ -20,7 +25,7 @@ import type { GitBookDocumentNode, GitBookDocumentLeaf } from '../types.js';
  * @param pageIdToPath - Map from GitBook page ID → output path (for
  *   resolving `content-ref` and `button` links to other pages).
  * @param opts - Optional maps for resolving file IDs and space IDs.
- * @returns MDX body string (no frontmatter).
+ * @returns Object with `mdx` body string and `columnsBlocks` info.
  */
 export function apiDocumentToMdx(
   nodes: GitBookDocumentNode[],
@@ -28,15 +33,19 @@ export function apiDocumentToMdx(
   opts?: {
     fileIdToUrl?: Map<string, string>;
     spaceIdToPath?: Map<string, string>;
+    columnsMode?: 'stacked' | 'cards' | 'skip';
   },
-): string {
+): { mdx: string; columnsBlocks: ColumnsBlockInfo[] } {
   const ctx: RenderContext = {
     pageIdToPath,
     fileIdToUrl: opts?.fileIdToUrl ?? new Map(),
     spaceIdToPath: opts?.spaceIdToPath ?? new Map(),
+    columnsBlocks: [],
+    columnsMode: opts?.columnsMode ?? 'stacked',
   };
   const lines = nodes.map((n) => renderNode(n, ctx)).filter(Boolean);
-  return lines.join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
+  const mdx = lines.join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
+  return { mdx, columnsBlocks: ctx.columnsBlocks };
 }
 
 // ── Render context ───────────────────────────────────────────────────
@@ -45,6 +54,8 @@ interface RenderContext {
   pageIdToPath: Map<string, string>;
   fileIdToUrl: Map<string, string>;
   spaceIdToPath: Map<string, string>;
+  columnsBlocks: ColumnsBlockInfo[];
+  columnsMode: 'stacked' | 'cards' | 'skip';
 }
 
 // ── Node renderer ────────────────────────────────────────────────────
@@ -112,6 +123,13 @@ function renderNode(node: GitBookDocumentNode, ctx: RenderContext): string {
 
     case 'link':
       return renderLink(node, ctx);
+
+    // Changelog updates
+    case 'updates':
+      return renderUpdates(node, ctx);
+
+    case 'update':
+      return renderUpdate(node, ctx);
 
     // Swagger / OpenAPI embed
     case 'swagger':
@@ -194,11 +212,100 @@ function renderBlockquote(node: GitBookDocumentNode, ctx: RenderContext): string
 }
 
 function renderColumns(node: GitBookDocumentNode, ctx: RenderContext): string {
-  // Mintlify has no columns component — render columns sequentially.
-  return (node.nodes ?? [])
-    .map((col) => renderNode(col, ctx))
-    .filter(Boolean)
-    .join('\n\n');
+  const columns = (node.nodes ?? []).filter((n) => n.type === 'column');
+
+  // Build content summary for each column.
+  const contentSummary = columns.map((col) => summarizeColumnContent(col));
+  ctx.columnsBlocks.push({
+    columnCount: columns.length,
+    contentSummary,
+  });
+
+  switch (ctx.columnsMode) {
+    case 'skip':
+      return '';
+
+    case 'cards': {
+      const cards = columns
+        .map((col) => {
+          const inner = renderChildren(col, ctx);
+          if (!inner) return '';
+          return `<Card>\n${inner}\n</Card>`;
+        })
+        .filter(Boolean);
+      if (cards.length === 0) return '';
+      return `<CardGroup cols={${columns.length}}>\n${cards.join('\n')}\n</CardGroup>`;
+    }
+
+    case 'stacked':
+    default:
+      // Render columns sequentially (original behavior).
+      return columns
+        .map((col) => renderNode(col, ctx))
+        .filter(Boolean)
+        .join('\n\n');
+  }
+}
+
+/**
+ * Summarize the top-level child node types in a column for the QA report.
+ */
+function summarizeColumnContent(col: GitBookDocumentNode): string {
+  const labels = (col.nodes ?? []).map((child) => {
+    switch (child.type) {
+      case 'heading-1':
+      case 'heading-2':
+      case 'heading-3':
+        return 'heading';
+      case 'paragraph':
+        return 'paragraph';
+      case 'code':
+        return 'code block';
+      case 'images':
+      case 'image':
+        return 'image';
+      case 'hint':
+        return 'hint';
+      case 'tabs':
+        return 'tabs';
+      case 'table':
+        return 'table';
+      case 'list-ordered':
+      case 'list-unordered':
+        return 'list';
+      case 'blockquote':
+        return 'blockquote';
+      case 'button':
+        return 'button';
+      case 'content-ref':
+        return 'content-ref';
+      case 'embed':
+        return 'embed';
+      case 'expandable':
+        return 'expandable';
+      case 'divider':
+        return 'divider';
+      case 'swagger':
+        return 'API reference';
+      case 'file':
+        return 'file';
+      default:
+        return child.type ?? 'unknown';
+    }
+  });
+  return labels.join(' + ') || 'empty';
+}
+
+function renderUpdates(node: GitBookDocumentNode, ctx: RenderContext): string {
+  const updates = (node.nodes ?? []).filter((n) => n.type === 'update');
+  return updates.map((u) => renderUpdate(u, ctx)).filter(Boolean).join('\n\n');
+}
+
+function renderUpdate(node: GitBookDocumentNode, ctx: RenderContext): string {
+  const date = node.data?.date ?? '';
+  const inner = renderChildren(node, ctx);
+  if (!inner) return '';
+  return `<Update label="${escapeAttr(date)}">\n${inner}\n</Update>`;
 }
 
 function renderTable(node: GitBookDocumentNode, ctx: RenderContext): string {

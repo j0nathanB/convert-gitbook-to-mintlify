@@ -302,13 +302,33 @@ async function fetchPage(
     const html = await page.content();
     const path = new URL(url).pathname;
 
-    // Detect layout hints from <main> element classes.
+    // Detect layout hints from the actual DOM structure.
     const layoutHints = await page.evaluate(() => {
       const main = document.querySelector('main');
       if (!main) return undefined;
       const classes = main.className || '';
-      const hasToc = classes.includes('page-has-toc');
       const isWide = classes.includes('page-width-wide');
+
+      // Detect actual ToC presence: check for a nav with "On this page"
+      // or a right-side aside that contains anchor links to heading IDs
+      // (href starting with #).
+      let hasToc = false;
+      const tocNav = document.querySelector('nav[aria-label="On this page"]');
+      if (tocNav && tocNav.querySelectorAll('a[href^="#"]').length > 0) {
+        hasToc = true;
+      }
+      if (!hasToc) {
+        // Check all asides for one that contains heading anchor links.
+        const asides = document.querySelectorAll('aside');
+        for (let i = 0; i < asides.length; i++) {
+          const headingLinks = asides[i].querySelectorAll('a[href^="#"]');
+          if (headingLinks.length >= 2) {
+            hasToc = true;
+            break;
+          }
+        }
+      }
+
       // Check if content is centered: left and right margins roughly equal.
       const rect = main.getBoundingClientRect();
       const vw = window.innerWidth;

@@ -99,6 +99,7 @@ export interface GitBookOpenAPISpec {
   title?: string;
   slug?: string;
   url?: string;
+  sourceURL?: string;
 }
 
 export interface GitBookRedirect {
@@ -262,6 +263,7 @@ export interface DocsNavTab {
   tab: string;
   groups: DocsNavGroup[];
   icon?: string;         // Font Awesome icon name for tab
+  openapi?: string | string[];  // OpenAPI spec file path(s) for this tab
 }
 
 export interface DocsNavGroup {

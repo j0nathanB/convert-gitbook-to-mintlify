@@ -17,6 +17,12 @@ export interface ColumnsBlockInfo {
   contentSummary: string[];  // e.g. ["heading + paragraph + buttons", "code block"]
 }
 
+export interface OpenapiOperation {
+  spec: string;   // GitBook spec slug, e.g. "gitbook-petstore"
+  method: string;  // e.g. "GET"
+  path: string;    // e.g. "/store/orders"
+}
+
 /**
  * Convert a GitBook API document (array of block nodes) into a
  * Mintlify-compatible MDX string.
@@ -35,17 +41,18 @@ export function apiDocumentToMdx(
     spaceIdToPath?: Map<string, string>;
     columnsMode?: 'stacked' | 'cards' | 'skip';
   },
-): { mdx: string; columnsBlocks: ColumnsBlockInfo[] } {
+): { mdx: string; columnsBlocks: ColumnsBlockInfo[]; openapiOperations: OpenapiOperation[] } {
   const ctx: RenderContext = {
     pageIdToPath,
     fileIdToUrl: opts?.fileIdToUrl ?? new Map(),
     spaceIdToPath: opts?.spaceIdToPath ?? new Map(),
     columnsBlocks: [],
     columnsMode: opts?.columnsMode ?? 'stacked',
+    openapiOperations: [],
   };
   const lines = nodes.map((n) => renderNode(n, ctx)).filter(Boolean);
   const mdx = lines.join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
-  return { mdx, columnsBlocks: ctx.columnsBlocks };
+  return { mdx, columnsBlocks: ctx.columnsBlocks, openapiOperations: ctx.openapiOperations };
 }
 
 // ── Render context ───────────────────────────────────────────────────
@@ -56,6 +63,7 @@ interface RenderContext {
   spaceIdToPath: Map<string, string>;
   columnsBlocks: ColumnsBlockInfo[];
   columnsMode: 'stacked' | 'cards' | 'skip';
+  openapiOperations: OpenapiOperation[];
 }
 
 // ── Node renderer ────────────────────────────────────────────────────
@@ -130,6 +138,10 @@ function renderNode(node: GitBookDocumentNode, ctx: RenderContext): string {
 
     case 'update':
       return renderUpdate(node, ctx);
+
+    // OpenAPI operation reference
+    case 'openapi-operation':
+      return renderOpenapiOperation(node, ctx);
 
     // Swagger / OpenAPI embed
     case 'swagger':
@@ -679,6 +691,17 @@ function renderLink(node: GitBookDocumentNode, ctx: RenderContext): string {
   const text = renderInlineChildren(node, ctx) || url;
   if (!url) return text;
   return `[${text}](${url})`;
+}
+
+function renderOpenapiOperation(node: GitBookDocumentNode, ctx: RenderContext): string {
+  const method = (node.data?.method ?? '').toUpperCase();
+  const path = node.data?.path ?? '';
+  const specSlug = node.data?.ref?.spec ?? '';
+  if (method && path) {
+    ctx.openapiOperations.push({ spec: specSlug, method, path });
+  }
+  // Mintlify renders OpenAPI operations via frontmatter, not inline.
+  return '';
 }
 
 function renderSwagger(node: GitBookDocumentNode): string {

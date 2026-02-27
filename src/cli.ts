@@ -26,7 +26,7 @@ import { buildAssetInventory, categorizeAssets } from './reconciler/asset-invent
 import { convertToMdx } from './transformer/mdx-converter.js';
 import { convertHtmlToMdx } from './transformer/hast-to-mdx.js';
 import { apiDocumentToMdx } from './transformer/api-to-mdx.js';
-import type { ColumnsBlockInfo } from './transformer/api-to-mdx.js';
+import type { ColumnsBlockInfo, OpenapiOperation } from './transformer/api-to-mdx.js';
 
 // ── Scraper ─────────────────────────────────────────────────────────
 import { crawlSite } from './scraper/crawler.js';
@@ -444,6 +444,31 @@ async function run(opts: CliOptions): Promise<void> {
                   mdxBody = result.mdx;
                   usedApi = true;
 
+                  // OpenAPI operations → frontmatter reference.
+                  // Store raw operations; spec file paths are resolved later.
+                  if (result.openapiOperations.length > 0) {
+                    frontmatter._openapiOps = result.openapiOperations;
+
+                    const ops = result.openapiOperations;
+                    const opsSummary = ops.map((o) => `${o.method} ${o.path}`).join(', ');
+                    if (ops.length > 1) {
+                      // GitBook shows all operations on one page; Mintlify only supports one per page.
+                      logger.warn(
+                        `OpenAPI page ${outputPath} has ${ops.length} operations (${opsSummary}); only the first is used. See QA report.`,
+                      );
+                    }
+                    warnings.push({
+                      type: 'openapi_operation',
+                      path: outputPath,
+                      message: `OpenAPI page rendered via frontmatter reference (${opsSummary}). ` +
+                        `GitBook renders operations inline; Mintlify uses its own OpenAPI renderer. ` +
+                        (ops.length > 1
+                          ? `Only the first of ${ops.length} operations is shown — consider splitting into separate pages.`
+                          : 'Verify the endpoint renders correctly.'),
+                      severity: 'warning',
+                    });
+                  }
+
                   if (result.columnsBlocks.length > 0) {
                     columnsReview.push({ path: outputPath, blocks: result.columnsBlocks });
                     logger.warn(
@@ -660,6 +685,15 @@ async function run(opts: CliOptions): Promise<void> {
     }
   }
 
+  // Build a map from GitBook OpenAPI spec slug → local file path for frontmatter.
+  const specSlugToFile = new Map<string, string>();
+  for (const spec of openapiSpecs) {
+    if (spec.slug) {
+      const ext = spec.sourceURL?.endsWith('.yaml') || spec.sourceURL?.endsWith('.yml') ? '.yaml' : '.json';
+      specSlugToFile.set(spec.slug, `openapi/${spec.slug}${ext}`);
+    }
+  }
+
   const transformSpinner = createSpinner('Transforming content to MDX...').start();
 
   const convertedPages: Array<{ outputPath: string; content: string }> = [];
@@ -706,6 +740,16 @@ async function run(opts: CliOptions): Promise<void> {
         }
         if (page.frontmatter.mode) {
           fmLines.push(`mode: "${page.frontmatter.mode}"`);
+        }
+        if (page.frontmatter._openapiOps) {
+          const ops = page.frontmatter._openapiOps as OpenapiOperation[];
+          // Mintlify expects one openapi string per page.
+          // Use the first operation as the page's primary endpoint.
+          if (ops.length > 0) {
+            const op = ops[0];
+            const specFile = specSlugToFile.get(op.spec) ?? op.spec;
+            fmLines.push(`openapi: "${specFile} ${op.method} ${op.path}"`);
+          }
         }
         fmLines.push('---');
         const fm = fmLines.join('\n');
@@ -798,6 +842,44 @@ async function run(opts: CliOptions): Promise<void> {
         downloadResult = await downloadAssets(downloadItems);
       }
 
+      // Download OpenAPI spec files
+      if (specSlugToFile.size > 0) {
+        outputSpinner.text = 'Downloading OpenAPI specs...';
+        const openapiDir = resolve(outputDir, 'openapi');
+        await import('node:fs/promises').then((fs) => fs.mkdir(openapiDir, { recursive: true }));
+        const specPaths: string[] = [];
+        for (const spec of openapiSpecs) {
+          if (spec.slug && spec.sourceURL) {
+            const localPath = specSlugToFile.get(spec.slug);
+            if (localPath) {
+              try {
+                const resp = await fetch(spec.sourceURL);
+                if (resp.ok) {
+                  const content = await resp.text();
+                  const fullPath = resolve(outputDir, localPath);
+                  await import('node:fs/promises').then((fs) => fs.writeFile(fullPath, content, 'utf-8'));
+                  specPaths.push(localPath);
+                  logger.info(`Downloaded OpenAPI spec: ${localPath}`);
+                }
+              } catch (err) {
+                logger.warn(`Failed to download OpenAPI spec ${spec.slug}: ${err}`);
+              }
+            }
+          }
+        }
+        // Attach spec paths to API-related tabs in docs.json navigation.
+        if (specPaths.length > 0) {
+          for (const tab of docsJson.navigation.tabs) {
+            // Heuristic: attach to tabs named "API" or containing openapi pages.
+            const tabName = tab.tab.toLowerCase();
+            if (tabName.includes('api') || tabName.includes('reference')) {
+              tab.openapi = specPaths.length === 1 ? specPaths[0] : specPaths;
+              break;
+            }
+          }
+        }
+      }
+
       // Download logos
       outputSpinner.text = 'Downloading logos...';
       const logoResult = await downloadLogos(customization, outputDir);
@@ -875,6 +957,13 @@ async function run(opts: CliOptions): Promise<void> {
               severity: 'medium' as const,
             })),
           ),
+          ...warnings
+            .filter((w) => w.type === 'openapi_operation')
+            .map((w) => ({
+              path: w.path ?? '',
+              reason: w.message,
+              severity: 'medium' as const,
+            })),
         ],
       });
 
